@@ -1,0 +1,46 @@
+# Swift / SwiftUI Project Rules
+
+## Project Architecture
+- **Architecture Pattern**: MVVM (Model-View-ViewModel).
+- **Separation of Concerns**:
+  - **Views**: Strictly for UI layout and display. No business logic.
+  - **ViewModels**: Handle state, user intent, and business logic. Must be `ObservableObject`.
+  - **Models**: Pure data structures (Structs/Enums).
+  - **Services/Managers**: Handle data fetching, storage, and system APIs (Location, Bluetooth, etc.).
+
+## Directory Structure
+Maintain the following directory structure for organization:
+- `App/`: App lifecycle (App.swift) and configuration.
+- `Models/`: Data models and entities.
+- `ViewModels/`: View models for specific screens.
+- `Views/`:
+  - `Screens/`: Full-screen views (e.g., `ContentView`, `SettingsView`).
+  - `Components/`: Reusable UI elements (e.g., `CustomButton`, `MapView`).
+  - `Sheets/`: Modal views and sheets.
+- `Managers/` or `Services/`: Shared services (e.g., `NavigationManager`, `LocationService`).
+- `Helpers/`: Extensions, Constants, and Utility functions.
+- `Resources/`: Assets, Colors, Fonts, Localizable strings.
+
+## Coding Standards
+- **File Organization**:
+  - One main type (class/struct/enum) per file.
+  - Filename should match the type name.
+- **Naming Conventions**:
+  - `PascalCase` for types (Structs, Classes, Enums, Protocols).
+  - `camelCase` for properties, methods, and variables.
+  - Boolean properties should generally read like assertions (e.g., `isNavigating`, `hasAccess`).
+  - **Variable Names**: Use simple, clear names that are easy for any human to understand at a 5th grade reading level. Prefer common words over technical jargon when possible (e.g., `userCount` instead of `usrCnt`, `isReady` instead of `rdy`, `totalPrice` instead of `totPrc`).
+- **Access Control**:
+  - Default to `private` for state variables and helper methods.
+  - Use `final` for classes that are not designed to be subclassed.
+- **SwiftUI Best Practices**:
+  - Use `@StateObject` when the view owns the object.
+  - Use `@ObservedObject` when the view receives the object.
+  - Break down large `body` properties into smaller subviews or properties.
+  - Use `MARK: - Section Name` to organize code within files.
+
+## AI Behavior
+- When creating new files, automatically suggest placing them in the appropriate directory defined above.
+- When refactoring, suggest moving logic out of Views into ViewModels or Managers.
+- Ensure all new UI code follows SwiftUI declarative syntax.
+
