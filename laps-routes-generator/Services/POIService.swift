@@ -69,8 +69,17 @@ class POIService {
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
         }
         
-        print("  Total unique POIs found: \(allPOIs.count)")
-        return allPOIs
+        // Sort by priority (lower = more important)
+        let sortedPOIs = allPOIs.sorted { $0.priority < $1.priority }
+        
+        // Log priority distribution
+        let tier1Count = sortedPOIs.filter { $0.priority == 1 }.count
+        let tier2Count = sortedPOIs.filter { $0.priority == 2 }.count
+        let tier3Count = sortedPOIs.filter { $0.priority == 3 }.count
+        let tier4Count = sortedPOIs.filter { $0.priority == 4 }.count
+        print("  Total unique POIs found: \(sortedPOIs.count) (landmarks:\(tier1Count) parks/museums:\(tier2Count) cultural:\(tier3Count) other:\(tier4Count))")
+        
+        return sortedPOIs
     }
     
     private func searchForTerm(_ term: String, near coordinate: CLLocationCoordinate2D, radiusInMeters: Double) async throws -> [PointOfInterest] {
@@ -89,6 +98,6 @@ class POIService {
         // Filter to only items with names
         let validItems = response.mapItems.filter { $0.name != nil }
         
-        return validItems.map { PointOfInterest(mapItem: $0) }
+        return validItems.map { PointOfInterest(mapItem: $0, searchTerm: term) }
     }
 }

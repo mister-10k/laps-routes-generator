@@ -32,6 +32,13 @@ class PersistenceService {
         return routesDirectory.appendingPathComponent("\(safeFileName)_routes.json")
     }
     
+    private func blacklistURL(for cityName: String) -> URL {
+        let safeFileName = cityName
+            .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
+        return routesDirectory.appendingPathComponent("\(safeFileName)_blacklist.json")
+    }
+    
     // MARK: - Save Routes
     
     func saveRoutes(_ routes: [Route], for cityName: String) {
@@ -102,8 +109,102 @@ class PersistenceService {
         }
         
         return files
-            .filter { $0.pathExtension == "json" }
+            .filter { $0.pathExtension == "json" && $0.lastPathComponent.contains("_routes") }
             .map { $0.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_routes", with: "") }
+    }
+    
+    // MARK: - Blacklist Management
+    
+    /// Blacklisted POI info - stores the POI name for display and identification
+    struct BlacklistedPOI: Codable, Hashable {
+        let name: String
+        let latitude: Double
+        let longitude: Double
+    }
+    
+    /// Add a POI to the blacklist for a city
+    /// Returns true if added, false if already blacklisted
+    @discardableResult
+    func addToBlacklist(poi: PointOfInterest, for cityName: String) -> Bool {
+        let blacklist = loadBlacklist(for: cityName)
+        
+        // Check if already blacklisted by name
+        if blacklist.contains(where: { $0.name == poi.name }) {
+            print("⚠️ Already blacklisted: \(poi.name) for \(cityName)")
+            return false
+        }
+        
+        var updatedBlacklist = blacklist
+        let entry = BlacklistedPOI(name: poi.name, latitude: poi.latitude, longitude: poi.longitude)
+        updatedBlacklist.insert(entry)
+        saveBlacklist(updatedBlacklist, for: cityName)
+        print("🚫 Blacklisted: \(poi.name) for \(cityName)")
+        return true
+    }
+    
+    /// Remove a POI from the blacklist
+    func removeFromBlacklist(poiName: String, for cityName: String) {
+        var blacklist = loadBlacklist(for: cityName)
+        blacklist = blacklist.filter { $0.name != poiName }
+        saveBlacklist(blacklist, for: cityName)
+        print("✅ Removed from blacklist: \(poiName) for \(cityName)")
+    }
+    
+    /// Check if a POI is blacklisted
+    func isBlacklisted(poiName: String, for cityName: String) -> Bool {
+        let blacklist = loadBlacklist(for: cityName)
+        return blacklist.contains(where: { $0.name == poiName })
+    }
+    
+    /// Get all blacklisted POI names for a city
+    func getBlacklistedNames(for cityName: String) -> Set<String> {
+        let blacklist = loadBlacklist(for: cityName)
+        return Set(blacklist.map { $0.name })
+    }
+    
+    /// Load the blacklist for a city
+    func loadBlacklist(for cityName: String) -> Set<BlacklistedPOI> {
+        let url = blacklistURL(for: cityName)
+        
+        guard fileManager.fileExists(atPath: url.path) else {
+            return []
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let blacklist = try JSONDecoder().decode(Set<BlacklistedPOI>.self, from: data)
+            return blacklist
+        } catch {
+            print("❌ Failed to load blacklist for \(cityName): \(error.localizedDescription)")
+            return []
+        }
+    }
+    
+    /// Save the blacklist for a city
+    private func saveBlacklist(_ blacklist: Set<BlacklistedPOI>, for cityName: String) {
+        let url = blacklistURL(for: cityName)
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(blacklist)
+            try data.write(to: url, options: .atomic)
+            print("💾 Saved blacklist (\(blacklist.count) items) for \(cityName)")
+        } catch {
+            print("❌ Failed to save blacklist for \(cityName): \(error.localizedDescription)")
+        }
+    }
+    
+    /// Clear the blacklist for a city
+    func clearBlacklist(for cityName: String) {
+        let url = blacklistURL(for: cityName)
+        try? fileManager.removeItem(at: url)
+        print("🗑️ Cleared blacklist for \(cityName)")
+    }
+    
+    /// Get blacklist count for a city
+    func blacklistCount(for cityName: String) -> Int {
+        return loadBlacklist(for: cityName).count
     }
 }
 

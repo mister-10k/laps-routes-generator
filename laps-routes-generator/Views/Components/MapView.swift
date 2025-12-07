@@ -1,6 +1,20 @@
 import SwiftUI
 import MapKit
 
+// Custom annotation for midpoint marker
+class MidpointAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let title: String?
+    let subtitle: String?
+    
+    init(coordinate: CLLocationCoordinate2D, title: String?, subtitle: String? = nil) {
+        self.coordinate = coordinate
+        self.title = title
+        self.subtitle = subtitle
+        super.init()
+    }
+}
+
 struct MapView: NSViewRepresentable {
     let region: MKCoordinateRegion
     let selectedRoute: Route?
@@ -20,7 +34,11 @@ struct MapView: NSViewRepresentable {
         // Update overlays
         nsView.removeOverlays(nsView.overlays)
         
+        // Update annotations (midpoint marker)
+        nsView.removeAnnotations(nsView.annotations)
+        
         if let route = selectedRoute {
+            // Add route path overlays
             let outbound = MKPolyline(coordinates: route.outboundPath, count: route.outboundPath.count)
             outbound.title = "Outbound"
             
@@ -29,9 +47,13 @@ struct MapView: NSViewRepresentable {
             
             nsView.addOverlays([outbound, inbound])
             
-            // Optionally adjust visible rect to fit route
-            // let rect = outbound.boundingMapRect.union(inbound.boundingMapRect)
-            // nsView.setVisibleMapRect(rect, edgePadding: NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20), animated: true)
+            // Add midpoint marker
+            let midpointAnnotation = MidpointAnnotation(
+                coordinate: route.midpoint.coordinate,
+                title: route.midpoint.name,
+                subtitle: String(format: "%.1f mi round trip", route.totalDistanceMiles)
+            )
+            nsView.addAnnotation(midpointAnnotation)
         }
     }
     
@@ -62,6 +84,34 @@ struct MapView: NSViewRepresentable {
                 return renderer
             }
             return MKOverlayRenderer(overlay: overlay)
+        }
+        
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            // Don't customize user location
+            if annotation is MKUserLocation {
+                return nil
+            }
+            
+            // Midpoint annotation - red marker
+            if let midpoint = annotation as? MidpointAnnotation {
+                let identifier = "MidpointMarker"
+                var annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
+                
+                if annotationView == nil {
+                    annotationView = MKMarkerAnnotationView(annotation: midpoint, reuseIdentifier: identifier)
+                    annotationView?.canShowCallout = true
+                } else {
+                    annotationView?.annotation = midpoint
+                }
+                
+                // Red marker for destination
+                annotationView?.markerTintColor = .systemRed
+                annotationView?.glyphImage = NSImage(systemSymbolName: "flag.fill", accessibilityDescription: "Destination")
+                
+                return annotationView
+            }
+            
+            return nil
         }
     }
 }

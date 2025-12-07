@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var generationStatus: String = ""
     @State private var citiesWithSavedRoutes: Set<String> = []
     @State private var groupingMode: GroupingMode = .byDistance
+    @State private var skippedThresholds: [Int] = []
+    @State private var showSkippedAlert = false
     
     enum GroupingMode: String, CaseIterable {
         case byDistance = "Distance"
@@ -144,6 +146,8 @@ struct ContentView: View {
                                         ForEach(group.routes) { route in
                                             RouteRow(route: route, showTime: true) {
                                                 regenerate(route: route)
+                                            } onBlacklist: {
+                                                blacklistRoute(route)
                                             }
                                             .tag(route.id)
                                         }
@@ -160,6 +164,8 @@ struct ContentView: View {
                                         ForEach(group.routes) { route in
                                             RouteRow(route: route, showTime: false) {
                                                 regenerate(route: route)
+                                            } onBlacklist: {
+                                                blacklistRoute(route)
                                             }
                                             .tag(route.id)
                                         }
@@ -209,6 +215,12 @@ struct ContentView: View {
             refreshSavedCitiesList()
             loadRoutesForCity(selectedCity)
         }
+        .alert("Some Thresholds Not Fully Covered", isPresented: $showSkippedAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            let skippedText = skippedThresholds.map { "\($0) min" }.joined(separator: ", ")
+            Text("The following time thresholds could not get 10 routes due to lack of available POIs:\n\n\(skippedText)")
+        }
     }
     
     // MARK: - Actions
@@ -251,14 +263,64 @@ struct ContentView: View {
     private func generateRoutes() {
         isGenerating = true
         generationStatus = "Starting..."
+        skippedThresholds = []
+        
+        // Keep track of existing routes to pass to generator
+        let existingRoutes = self.routes
+        
+        // Set up progress callback
+        RouteGenerator.shared.onProgressUpdate = { message in
+            Task { @MainActor in
+                self.generationStatus = message
+            }
+        }
+        
+        // Set up incremental route callback - routes appear in UI as they're generated
+        RouteGenerator.shared.onRouteGenerated = { newRoute in
+            Task { @MainActor in
+                // Only add if not already in our list (existing routes are passed to generator)
+                if !self.routes.contains(where: { $0.id == newRoute.id }) {
+                    self.routes.append(newRoute)
+                }
+            }
+        }
+        
+        // Set up incremental save callback - routes are saved as they're generated
+        // This ensures progress is preserved even if app is closed mid-generation
+        let cityName = selectedCity.name
+        RouteGenerator.shared.onSaveRoutes = { routes in
+            Task { @MainActor in
+                PersistenceService.shared.saveRoutes(routes, for: cityName)
+            }
+        }
         
         Task {
-            let generated = await RouteGenerator.shared.generateRoutes(for: selectedCity)
+            // Get blacklisted POI names for this city
+            let blacklistedNames = PersistenceService.shared.getBlacklistedNames(for: selectedCity.name)
+            
+            // Pass existing routes and blacklist so generator doesn't regenerate what we already have
+            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
             
             await MainActor.run {
-                self.routes = generated
+                // Final sync - ensure we have all routes (in case callback missed any)
+                self.routes = result.routes
+                self.skippedThresholds = result.skippedThresholds
                 self.isGenerating = false
-                self.generationStatus = "Generated \(generated.count) routes"
+                
+                // Create status message
+                let coverageCount = result.coverageByThreshold.values.filter { $0 >= 10 }.count
+                let totalThresholds = result.coverageByThreshold.count
+                let newRoutesCount = result.routes.count - existingRoutes.count
+                if existingRoutes.isEmpty {
+                    self.generationStatus = "Generated \(result.routes.count) routes (\(coverageCount)/\(totalThresholds) thresholds covered)"
+                } else {
+                    self.generationStatus = "Added \(newRoutesCount) new routes (total: \(result.routes.count), \(coverageCount)/\(totalThresholds) covered)"
+                }
+                
+                // Show alert if any thresholds were skipped
+                if !result.skippedThresholds.isEmpty {
+                    showSkippedAlert = true
+                }
                 
                 // Auto-save after generation
                 saveRoutes()
@@ -315,43 +377,82 @@ struct ContentView: View {
             }
         }
     }
+    
+    private func blacklistRoute(_ route: Route) {
+        // Add to blacklist (returns false if already blacklisted)
+        let wasAdded = PersistenceService.shared.addToBlacklist(poi: route.midpoint, for: selectedCity.name)
+        
+        // Remove from current routes
+        routes.removeAll { $0.id == route.id }
+        
+        // Clear selection if this was selected
+        if selectedRouteId == route.id {
+            selectedRouteId = nil
+        }
+        
+        // Save updated routes
+        saveRoutes()
+        
+        let blacklistCount = PersistenceService.shared.blacklistCount(for: selectedCity.name)
+        if wasAdded {
+            generationStatus = "Blacklisted \(route.name) (\(blacklistCount) total blacklisted)"
+        } else {
+            generationStatus = "Removed \(route.name) (already blacklisted)"
+        }
+    }
 }
 
 struct RouteRow: View {
     let route: Route
     var showTime: Bool = true
     let onRegenerate: () -> Void
+    let onBlacklist: () -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(route.name)
-                .font(.system(size: 13, weight: .medium))
-            
-            HStack(spacing: 8) {
-                Text(String(format: "%.1f mi", route.totalDistanceMiles))
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(route.name)
+                    .font(.system(size: 13, weight: .medium))
                 
-                if showTime {
-                    Text("•")
-                    if let min = route.validSessionTimes.min(), let max = route.validSessionTimes.max() {
-                        if min == max {
-                            Text("\(min) min")
+                HStack(spacing: 8) {
+                    Text(String(format: "%.1f mi", route.totalDistanceMiles))
+                    
+                    if showTime {
+                        Text("•")
+                        if let min = route.validSessionTimes.min(), let max = route.validSessionTimes.max() {
+                            if min == max {
+                                Text("\(min) min")
+                            } else {
+                                Text("\(min)-\(max) min")
+                            }
                         } else {
-                            Text("\(min)-\(max) min")
+                            Text("N/A min")
                         }
-                    } else {
-                        Text("N/A min")
                     }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                
+                Button("Regenerate") {
+                    onRegenerate()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .padding(.top, 2)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
             
-            Button("Regenerate") {
-                onRegenerate()
+            Spacer()
+            
+            // Blacklist button
+            Button {
+                onBlacklist()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.red.opacity(0.7))
+                    .font(.system(size: 16))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .padding(.top, 2)
+            .buttonStyle(.plain)
+            .help("Remove and blacklist this route")
         }
         .padding(.vertical, 4)
     }
