@@ -361,7 +361,6 @@ class RouteGenerator {
                 distanceBandMiles: route.distanceBandMiles,
                 outboundPath: route.outboundPath,
                 returnPath: route.returnPath,
-                pacingInstructions: route.pacingInstructions,
                 validSessionTimes: validTimes
             )
         }
@@ -522,7 +521,6 @@ class RouteGenerator {
             
             // Generate metadata
             let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
-            let pacing = generatePacing(distanceMiles: totalDistanceMiles)
             
             // Infer distance band for backwards compatibility
             let distanceBand = inferDistanceBand(from: totalDistanceMiles)
@@ -535,7 +533,6 @@ class RouteGenerator {
                 distanceBandMiles: distanceBand,
                 outboundPath: bestOut.coordinates,
                 returnPath: bestRet.coordinates,
-                pacingInstructions: pacing,
                 validSessionTimes: validTimes
             )
             
@@ -555,24 +552,6 @@ class RouteGenerator {
             let maxDist = 13.0 * hours
             return distanceMiles >= minDist && distanceMiles <= maxDist
         }
-    }
-    
-    private func generatePacing(distanceMiles: Double) -> [PacingInstruction] {
-        var instructions: [PacingInstruction] = []
-        let segments = 5
-        let segmentDist = distanceMiles / Double(segments)
-        
-        for i in 0..<segments {
-            let dist = Double(i) * segmentDist
-            let speed: Double
-            if i == 0 || i == segments - 1 {
-                speed = 9.0
-            } else {
-                speed = Double.random(in: 8.5...11.0)
-            }
-            instructions.append(PacingInstruction(distance: dist, speed: speed))
-        }
-        return instructions
     }
     
     private func inferDistanceBand(from distance: Double) -> Double {

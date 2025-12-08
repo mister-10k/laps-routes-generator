@@ -17,7 +17,6 @@ struct SupabaseRoute: Encodable {
     let total_distance_miles: Double
     let outbound_path: [[Double]] // JSONB
     let return_path: [[Double]]   // JSONB
-    let pacing_instructions: [PacingInstruction] // JSONB
     let valid_session_times: [Int] // Array
 }
 
@@ -91,7 +90,6 @@ class SupabaseService {
                 total_distance_miles: route.totalDistanceMiles,
                 outbound_path: route.outboundPath.map { [$0.latitude, $0.longitude] },
                 return_path: route.returnPath.map { [$0.latitude, $0.longitude] },
-                pacing_instructions: route.pacingInstructions,
                 valid_session_times: route.validSessionTimes.map { $0 * 60 } // Convert minutes to seconds for Laps convention
             )
         }

@@ -25,7 +25,6 @@ struct Route: Identifiable, Hashable, Codable {
     let distanceBandMiles: Double // Target distance band (1.0, 2.0, 4.0, etc.)
     private let outboundPathEncoded: [CodableCoordinate]
     private let returnPathEncoded: [CodableCoordinate]
-    let pacingInstructions: [PacingInstruction]
     let validSessionTimes: [Int]
     
     var outboundPath: [CLLocationCoordinate2D] {
@@ -40,7 +39,7 @@ struct Route: Identifiable, Hashable, Codable {
     
     private enum CodingKeys: String, CodingKey {
         case id, name, startingPoint, turnaroundPoint, midpoint, totalDistanceMiles, distanceBandMiles
-        case outboundPathEncoded, returnPathEncoded, pacingInstructions, validSessionTimes
+        case outboundPathEncoded, returnPathEncoded, validSessionTimes
     }
     
     // MARK: - Custom Decoder (backwards compatibility)
@@ -62,7 +61,6 @@ struct Route: Identifiable, Hashable, Codable {
         totalDistanceMiles = try container.decode(Double.self, forKey: .totalDistanceMiles)
         outboundPathEncoded = try container.decode([CodableCoordinate].self, forKey: .outboundPathEncoded)
         returnPathEncoded = try container.decode([CodableCoordinate].self, forKey: .returnPathEncoded)
-        pacingInstructions = try container.decode([PacingInstruction].self, forKey: .pacingInstructions)
         validSessionTimes = try container.decode([Int].self, forKey: .validSessionTimes)
         
         // Backwards compatibility: infer distance band from total distance if not present
@@ -85,7 +83,6 @@ struct Route: Identifiable, Hashable, Codable {
         try container.encode(distanceBandMiles, forKey: .distanceBandMiles)
         try container.encode(outboundPathEncoded, forKey: .outboundPathEncoded)
         try container.encode(returnPathEncoded, forKey: .returnPathEncoded)
-        try container.encode(pacingInstructions, forKey: .pacingInstructions)
         try container.encode(validSessionTimes, forKey: .validSessionTimes)
     }
     
@@ -100,7 +97,6 @@ struct Route: Identifiable, Hashable, Codable {
         distanceBandMiles: Double,
         outboundPath: [CLLocationCoordinate2D],
         returnPath: [CLLocationCoordinate2D],
-        pacingInstructions: [PacingInstruction],
         validSessionTimes: [Int]
     ) {
         self.id = id
@@ -111,7 +107,6 @@ struct Route: Identifiable, Hashable, Codable {
         self.distanceBandMiles = distanceBandMiles
         self.outboundPathEncoded = outboundPath.map { CodableCoordinate($0) }
         self.returnPathEncoded = returnPath.map { CodableCoordinate($0) }
-        self.pacingInstructions = pacingInstructions
         self.validSessionTimes = validSessionTimes
     }
     
