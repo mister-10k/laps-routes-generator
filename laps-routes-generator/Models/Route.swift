@@ -19,6 +19,7 @@ struct CodableCoordinate: Codable {
 struct Route: Identifiable, Hashable, Codable {
     let id: UUID
     let name: String
+    let continent: String
     let startingPoint: PointOfInterest
     let turnaroundPoint: PointOfInterest
     let totalDistanceMiles: Double
@@ -38,7 +39,7 @@ struct Route: Identifiable, Hashable, Codable {
     // MARK: - Coding Keys
     
     private enum CodingKeys: String, CodingKey {
-        case id, name, startingPoint, turnaroundPoint, midpoint, totalDistanceMiles, distanceBandMiles
+        case id, name, continent, startingPoint, turnaroundPoint, midpoint, totalDistanceMiles, distanceBandMiles
         case outboundPathEncoded, returnPathEncoded, validSessionTimes
     }
     
@@ -49,6 +50,10 @@ struct Route: Identifiable, Hashable, Codable {
         
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        
+        // Backwards compatibility: default to empty string if continent not present
+        continent = try container.decodeIfPresent(String.self, forKey: .continent) ?? ""
+        
         startingPoint = try container.decode(PointOfInterest.self, forKey: .startingPoint)
         
         // Backwards compatibility: try new key first, fall back to old "midpoint" key
@@ -77,6 +82,7 @@ struct Route: Identifiable, Hashable, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
+        try container.encode(continent, forKey: .continent)
         try container.encode(startingPoint, forKey: .startingPoint)
         try container.encode(turnaroundPoint, forKey: .turnaroundPoint)
         try container.encode(totalDistanceMiles, forKey: .totalDistanceMiles)
@@ -91,6 +97,7 @@ struct Route: Identifiable, Hashable, Codable {
     init(
         id: UUID = UUID(),
         name: String,
+        continent: String,
         startingPoint: PointOfInterest,
         turnaroundPoint: PointOfInterest,
         totalDistanceMiles: Double,
@@ -101,6 +108,7 @@ struct Route: Identifiable, Hashable, Codable {
     ) {
         self.id = id
         self.name = name
+        self.continent = continent
         self.startingPoint = startingPoint
         self.turnaroundPoint = turnaroundPoint
         self.totalDistanceMiles = totalDistanceMiles

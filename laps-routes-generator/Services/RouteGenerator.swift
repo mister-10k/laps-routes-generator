@@ -284,7 +284,7 @@ class RouteGenerator {
                     // Try to generate a route to this POI
                     print("    [\(attemptedCount)] [\(currentCount)/\(routesPerThreshold)] Trying: \(poi.name)...")
                     
-                    let result = await generateRoute(from: startPoint, to: poi, targetDistance: threshold.targetDistanceMiles)
+                    let result = await generateRoute(from: startPoint, to: poi, targetDistance: threshold.targetDistanceMiles, continent: city.continent)
                     
                     switch result {
                     case .success(let route):
@@ -355,6 +355,7 @@ class RouteGenerator {
             return Route(
                 id: route.id,
                 name: route.name,
+                continent: route.continent,
                 startingPoint: route.startingPoint,
                 turnaroundPoint: route.turnaroundPoint,
                 totalDistanceMiles: route.totalDistanceMiles,
@@ -424,7 +425,7 @@ class RouteGenerator {
             
             // Try up to 10 candidates
             for poi in candidates_shuffled.prefix(10) {
-                let result = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles)
+                let result = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles, continent: city.continent)
                 if case .success(let newRoute) = result {
                     if primaryThreshold.isValidDistance(newRoute.totalDistanceMiles) {
                         return newRoute
@@ -471,7 +472,7 @@ class RouteGenerator {
         }
     }
     
-    private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double) async -> RouteGenerationResult {
+    private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double, continent: String) async -> RouteGenerationResult {
         do {
             print("        → Calling OSRM for outbound & return paths...")
             
@@ -527,6 +528,7 @@ class RouteGenerator {
             
             let route = Route(
                 name: turnaroundPoint.name,
+                continent: continent,
                 startingPoint: start,
                 turnaroundPoint: turnaroundPoint,
                 totalDistanceMiles: totalDistanceMiles,

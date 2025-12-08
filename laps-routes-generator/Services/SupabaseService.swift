@@ -4,6 +4,8 @@ import CoreLocation
 struct SupabasePOI: Encodable {
     let id: UUID
     let name: String
+    let continent: String
+    let city: String
     let latitude: Double
     let longitude: Double
     let type: String
@@ -64,6 +66,8 @@ class SupabaseService {
             SupabasePOI(
                 id: poi.id,
                 name: poi.name,
+                continent: city.continent,
+                city: city.name,
                 latitude: poi.latitude,
                 longitude: poi.longitude,
                 type: poi.type
