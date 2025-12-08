@@ -44,3 +44,8 @@ Maintain the following directory structure for organization:
 - When refactoring, suggest moving logic out of Views into ViewModels or Managers.
 - Ensure all new UI code follows SwiftUI declarative syntax.
 
+## Laps-Specific Conventions
+- **Time Units**: When exporting to Supabase, all time-based values must be in **seconds** to match the Laps ecosystem convention.
+  - Internal app logic may use minutes for convenience, but convert to seconds before export.
+  - Example: `valid_session_times` stored as minutes internally, converted to seconds for Supabase.
+

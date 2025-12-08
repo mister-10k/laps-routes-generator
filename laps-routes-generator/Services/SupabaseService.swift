@@ -32,14 +32,36 @@ class SupabaseService {
     ]
     
     func export(city: City, routes: [Route]) async throws {
+        print("\n🚀 Starting Supabase Export for \(city.name)")
+        print("   Routes to export: \(routes.count)")
+        
         // 1. Collect all unique POIs (starting points + turnaround points)
-        var poisToUpsert = Set<PointOfInterest>()
+        // Deduplicate by name + coordinates, not by UUID (since routes generate new UUIDs each time)
+        var uniquePOIsByLocation: [String: PointOfInterest] = [:]
+        
         for route in routes {
-            poisToUpsert.insert(route.startingPoint)
-            poisToUpsert.insert(route.turnaroundPoint)
+            // Create a unique key based on name and rounded coordinates
+            let startKey = makeLocationKey(poi: route.startingPoint)
+            let turnaroundKey = makeLocationKey(poi: route.turnaroundPoint)
+            
+            // Only keep the first occurrence of each location
+            if uniquePOIsByLocation[startKey] == nil {
+                uniquePOIsByLocation[startKey] = route.startingPoint
+            }
+            if uniquePOIsByLocation[turnaroundKey] == nil {
+                uniquePOIsByLocation[turnaroundKey] = route.turnaroundPoint
+            }
         }
         
-        let supabasePOIs = poisToUpsert.map { poi in
+        print("   Unique POIs to upsert: \(uniquePOIsByLocation.count)")
+        
+        // Build a mapping from location key -> POI ID (the deduplicated one we'll actually insert)
+        var locationKeyToId: [String: UUID] = [:]
+        for (key, poi) in uniquePOIsByLocation {
+            locationKeyToId[key] = poi.id
+        }
+        
+        let supabasePOIs = uniquePOIsByLocation.values.map { poi in
             SupabasePOI(
                 id: poi.id,
                 name: poi.name,
@@ -52,18 +74,25 @@ class SupabaseService {
         // 2. Upsert POIs
         try await upsertPOIs(supabasePOIs)
         
-        // 3. Insert Routes
+        // 3. Insert Routes (using deduplicated POI IDs)
         let supabaseRoutes = routes.map { route in
-            SupabaseRoute(
+            // Look up the correct POI ID using the location key
+            let startKey = makeLocationKey(poi: route.startingPoint)
+            let turnaroundKey = makeLocationKey(poi: route.turnaroundPoint)
+            
+            let startingPointId = locationKeyToId[startKey] ?? route.startingPoint.id
+            let turnaroundPointId = locationKeyToId[turnaroundKey] ?? route.turnaroundPoint.id
+            
+            return SupabaseRoute(
                 id: route.id,
                 name: route.name,
-                starting_point_id: route.startingPoint.id,
-                turnaround_point_id: route.turnaroundPoint.id,
+                starting_point_id: startingPointId,
+                turnaround_point_id: turnaroundPointId,
                 total_distance_miles: route.totalDistanceMiles,
                 outbound_path: route.outboundPath.map { [$0.latitude, $0.longitude] },
                 return_path: route.returnPath.map { [$0.latitude, $0.longitude] },
                 pacing_instructions: route.pacingInstructions,
-                valid_session_times: route.validSessionTimes
+                valid_session_times: route.validSessionTimes.map { $0 * 60 } // Convert minutes to seconds for Laps convention
             )
         }
         
@@ -77,10 +106,34 @@ class SupabaseService {
         request.allHTTPHeaderFields = headers
         request.httpBody = try JSONEncoder().encode(pois)
         
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 300 {
-            throw URLError(.badServerResponse)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            print("📤 POI Upsert Response: Status \(httpResponse.statusCode)")
+            
+            if httpResponse.statusCode >= 300 {
+                // Try to parse error message from response
+                if let errorString = String(data: data, encoding: .utf8) {
+                    print("❌ Supabase POI Error Response: \(errorString)")
+                }
+                throw NSError(
+                    domain: "SupabaseService",
+                    code: httpResponse.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: "POI upsert failed with status \(httpResponse.statusCode)"]
+                )
+            }
         }
+    }
+    
+    // MARK: - Helper Methods
+    
+    /// Create a unique key for a POI based on name and location
+    /// This ensures we deduplicate POIs that represent the same physical location
+    private func makeLocationKey(poi: PointOfInterest) -> String {
+        // Round coordinates to 6 decimal places (~0.1 meters precision)
+        let lat = String(format: "%.6f", poi.latitude)
+        let lon = String(format: "%.6f", poi.longitude)
+        return "\(poi.name)_\(lat)_\(lon)"
     }
     
     private func insertRoutes(_ routes: [SupabaseRoute]) async throws {
@@ -98,9 +151,22 @@ class SupabaseService {
         request.allHTTPHeaderFields = headers
         request.httpBody = try JSONEncoder().encode(routes)
         
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 300 {
-            throw URLError(.badServerResponse)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            print("📤 Routes Insert Response: Status \(httpResponse.statusCode)")
+            
+            if httpResponse.statusCode >= 300 {
+                // Try to parse error message from response
+                if let errorString = String(data: data, encoding: .utf8) {
+                    print("❌ Supabase Routes Error Response: \(errorString)")
+                }
+                throw NSError(
+                    domain: "SupabaseService",
+                    code: httpResponse.statusCode,
+                    userInfo: [NSLocalizedDescriptionKey: "Routes insert failed with status \(httpResponse.statusCode)"]
+                )
+            }
         }
     }
 }

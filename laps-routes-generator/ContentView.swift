@@ -20,6 +20,10 @@ struct ContentView: View {
     @State private var showSkippedAlert = false
     @State private var blacklistCount = 0
     @State private var searchText: String = ""
+    @State private var showExportPreview = false
+    @State private var currentToast: Toast?
+    @State private var showClearRoutesAlert = false
+    @State private var showClearBlacklistAlert = false
     
     enum GroupingMode: String, CaseIterable {
         case byDistance = "Distance"
@@ -109,14 +113,14 @@ struct ContentView: View {
                 }
                 
                 Button("Clear Blacklist (\(blacklistCount))") {
-                    clearBlacklist()
+                    showClearBlacklistAlert = true
                 }
                 .foregroundStyle(.orange)
                 .disabled(blacklistCount == 0)
                 
                 if !routes.isEmpty {
                     Button("Clear Routes") {
-                        clearRoutes()
+                        showClearRoutesAlert = true
                     }
                     .foregroundStyle(.red)
                 }
@@ -264,13 +268,14 @@ struct ContentView: View {
                 Spacer()
                 
                 Button("Export to Supabase") {
-                    exportToSupabase()
+                    showExportPreview = true
                 }
                 .disabled(routes.isEmpty)
             }
             .padding()
             .background(Color(nsColor: .windowBackgroundColor))
         }
+        .toast($currentToast)
         .onAppear {
             updateRegion(for: selectedStartingPoint)
             refreshSavedCitiesList()
@@ -288,6 +293,35 @@ struct ContentView: View {
         } message: {
             let skippedText = skippedThresholds.map { "\($0) min" }.joined(separator: ", ")
             Text("The following time thresholds could not get 10 routes due to lack of available POIs:\n\n\(skippedText)")
+        }
+        .alert("Clear All Routes?", isPresented: $showClearRoutesAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                clearRoutes()
+            }
+        } message: {
+            Text("This will delete all \(routes.count) routes for \(selectedCity.name). This action cannot be undone.")
+        }
+        .alert("Clear Blacklist?", isPresented: $showClearBlacklistAlert) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                clearBlacklist()
+            }
+        } message: {
+            Text("This will remove all \(blacklistCount) blacklisted POIs for \(selectedCity.name). Previously blacklisted locations may appear again when generating routes.")
+        }
+        .sheet(isPresented: $showExportPreview) {
+            ExportPreviewSheet(
+                city: selectedCity,
+                routes: routes,
+                onConfirm: {
+                    showExportPreview = false
+                    exportToSupabase()
+                },
+                onCancel: {
+                    showExportPreview = false
+                }
+            )
         }
     }
     
@@ -451,11 +485,31 @@ struct ContentView: View {
                 await MainActor.run {
                     isGenerating = false
                     generationStatus = "Exported successfully!"
+                    
+                    // Show success toast
+                    currentToast = Toast(message: "Exported \(routes.count) routes to Supabase!", type: .success)
+                    
+                    // Auto-dismiss after 3 seconds
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        currentToast = nil
+                    }
                 }
             } catch {
+                print("❌ Export to Supabase failed: \(error)")
+                
                 await MainActor.run {
                     isGenerating = false
                     generationStatus = "Export failed: \(error.localizedDescription)"
+                    
+                    // Show error toast
+                    currentToast = Toast(message: "Export failed: \(error.localizedDescription)", type: .error)
+                    
+                    // Auto-dismiss after 5 seconds (longer for errors so user can read)
+                    Task {
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                        currentToast = nil
+                    }
                 }
             }
         }
