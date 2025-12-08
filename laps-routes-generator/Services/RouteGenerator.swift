@@ -143,13 +143,14 @@ class RouteGenerator {
     
     // MARK: - Main Generation Method
     
-    func generateRoutes(for city: City, startingPoint: StartingPoint, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
+    func generateRoutes(for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
         let generationStartTime = Date()
         
         print("\n╔════════════════════════════════════════════════════════════╗")
         print("║  ROUTE GENERATION STARTING                                  ║")
         print("║  City: \(city.name.padding(toLength: 48, withPad: " ", startingAt: 0))  ║")
         print("║  Starting Point: \(startingPoint.name.padding(toLength: 39, withPad: " ", startingAt: 0))  ║")
+        print("║  Direction: \(directionPreference.rawValue.padding(toLength: 44, withPad: " ", startingAt: 0))  ║")
         print("║  Target: \(routesPerThreshold) unique routes per time threshold               ║")
         print("║  Thresholds: 5, 10, 15 ... 120 min (\(allThresholds.count) total)             ║")
         print("║  Existing routes to keep: \(String(existingRoutes.count).padding(toLength: 29, withPad: " ", startingAt: 0))  ║")
@@ -234,6 +235,19 @@ class RouteGenerator {
                 let filteredOutCount = thresholdFilteredPOIs.count - availablePOIs.count
                 print("  After distance filtering: \(availablePOIs.count) POIs in straight-line range \(String(format: "%.2f", minStraightLineMeters/1609.34))-\(String(format: "%.2f", maxStraightLineMeters/1609.34)) mi (\(filteredOutCount) filtered out)")
                 
+                // Filter by direction preference
+                let directionFilteredPOIs: [PointOfInterest]
+                if directionPreference != .noPreference {
+                    directionFilteredPOIs = availablePOIs.filter { poi in
+                        let bearing = calculateBearing(from: startingPoint.coordinate, to: poi.coordinate)
+                        return matchesDirection(bearing, preference: directionPreference)
+                    }
+                    let directionFilteredCount = availablePOIs.count - directionFilteredPOIs.count
+                    print("  After direction filtering (\(directionPreference.rawValue)): \(directionFilteredPOIs.count) POIs (\(directionFilteredCount) filtered out)")
+                } else {
+                    directionFilteredPOIs = availablePOIs
+                }
+                
                 print("  Target route distance: \(String(format: "%.2f", threshold.targetDistanceMiles)) mi | Valid range: \(String(format: "%.2f", threshold.minDistanceMiles))-\(String(format: "%.2f", threshold.maxDistanceMiles)) mi")
                 
                 var generatedForThreshold = 0
@@ -245,7 +259,7 @@ class RouteGenerator {
                 let maxConsecutiveOutsideRange = 20
                 
                 // Sort by priority (famous/popular places first) with shuffle within each tier for variety
-                let prioritizedPOIs = availablePOIs
+                let prioritizedPOIs = directionFilteredPOIs
                     .sorted { $0.priority < $1.priority }
                     .chunkedByPriority()
                     .flatMap { $0.shuffled() }
@@ -375,7 +389,7 @@ class RouteGenerator {
     
     // MARK: - Regenerate Single Route
     
-    func regenerateRoute(oldRoute: Route, city: City, startingPoint: StartingPoint) async -> Route? {
+    func regenerateRoute(oldRoute: Route, city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference) async -> Route? {
         // Find which time thresholds this route serves
         guard let primaryThreshold = allThresholds.first(where: { $0.isValidDistance(oldRoute.totalDistanceMiles) }) else {
             print("Could not find matching threshold for route distance \(oldRoute.totalDistanceMiles)")
@@ -391,16 +405,26 @@ class RouteGenerator {
             
             // Filter out the current POI and those too close to start
             let startLoc = CLLocation(latitude: startingPoint.coordinate.latitude, longitude: startingPoint.coordinate.longitude)
-            let candidates = pois.filter { poi in
+            var candidates = pois.filter { poi in
                 if poi.id == oldRoute.turnaroundPoint.id { return false }
                 let poiLoc = CLLocation(latitude: poi.coordinate.latitude, longitude: poi.coordinate.longitude)
                 return poiLoc.distance(from: startLoc) >= 500
-            }.shuffled()
+            }
+            
+            // Apply direction filter if specified
+            if directionPreference != .noPreference {
+                candidates = candidates.filter { poi in
+                    let bearing = calculateBearing(from: startingPoint.coordinate, to: poi.coordinate)
+                    return matchesDirection(bearing, preference: directionPreference)
+                }
+            }
+            
+            let candidates_shuffled = candidates.shuffled()
             
             let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
             
             // Try up to 10 candidates
-            for poi in candidates.prefix(10) {
+            for poi in candidates_shuffled.prefix(10) {
                 let result = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles)
                 if case .success(let newRoute) = result {
                     if primaryThreshold.isValidDistance(newRoute.totalDistanceMiles) {
@@ -416,6 +440,37 @@ class RouteGenerator {
     }
     
     // MARK: - Private Methods
+    
+    /// Calculate bearing (direction) from start to end in degrees (0-360)
+    /// 0/360 = North, 90 = East, 180 = South, 270 = West
+    private func calculateBearing(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
+        let lat1 = start.latitude * .pi / 180
+        let lat2 = end.latitude * .pi / 180
+        let dLon = (end.longitude - start.longitude) * .pi / 180
+        
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        let bearing = atan2(y, x) * 180 / .pi
+        
+        // Normalize to 0-360
+        return (bearing + 360).truncatingRemainder(dividingBy: 360)
+    }
+    
+    /// Check if a bearing matches the desired direction preference
+    private func matchesDirection(_ bearing: Double, preference: DirectionPreference) -> Bool {
+        switch preference {
+        case .noPreference:
+            return true
+        case .north:
+            return bearing >= 315 || bearing <= 45  // 315-45 degrees
+        case .east:
+            return bearing >= 45 && bearing <= 135  // 45-135 degrees
+        case .south:
+            return bearing >= 135 && bearing <= 225 // 135-225 degrees
+        case .west:
+            return bearing >= 225 && bearing <= 315 // 225-315 degrees
+        }
+    }
     
     private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double) async -> RouteGenerationResult {
         do {

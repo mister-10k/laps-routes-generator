@@ -4,6 +4,7 @@ import MapKit
 struct ContentView: View {
     @State private var selectedCity: City = Cities.all[0]
     @State private var selectedStartingPoint: StartingPoint = Cities.all[0].startingPoints[0]
+    @State private var selectedDirection: DirectionPreference = .noPreference
     @State private var region: MKCoordinateRegion = MKCoordinateRegion(
         center: Cities.all[0].coordinate,
         span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
@@ -82,6 +83,8 @@ struct ContentView: View {
                 .onChange(of: selectedStartingPoint) { newStartingPoint in
                     updateRegion(for: newStartingPoint)
                 }
+                
+                DirectionPickerView(selectedDirection: $selectedDirection)
                 
                 Spacer()
                 
@@ -331,7 +334,7 @@ struct ContentView: View {
             let blacklistedNames = PersistenceService.shared.getBlacklistedNames(for: selectedCity.name)
             
             // Pass existing routes and blacklist so generator doesn't regenerate what we already have
-            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
+            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
             
             await MainActor.run {
                 // Final sync - ensure we have all routes (in case callback missed any)
@@ -387,7 +390,7 @@ struct ContentView: View {
         generationStatus = "Regenerating \(route.name)..."
         
         Task {
-            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity, startingPoint: selectedStartingPoint) {
+            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection) {
                 await MainActor.run {
                     if let index = routes.firstIndex(where: { $0.id == route.id }) {
                         routes[index] = newRoute
