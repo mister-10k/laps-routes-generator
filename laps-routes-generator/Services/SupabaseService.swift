@@ -32,10 +32,10 @@ class SupabaseService {
     ]
     
     func export(city: City, routes: [Route]) async throws {
-        // 1. Collect all unique POIs (start + turnaround points)
+        // 1. Collect all unique POIs (starting points + turnaround points)
         var poisToUpsert = Set<PointOfInterest>()
-        poisToUpsert.insert(routes.first!.startingPoint) // Assuming all have same start
         for route in routes {
+            poisToUpsert.insert(route.startingPoint)
             poisToUpsert.insert(route.turnaroundPoint)
         }
         

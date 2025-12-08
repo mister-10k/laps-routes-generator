@@ -100,6 +100,9 @@ iOSInjectionProject/
 .env.local
 .env.*.local
 
+# Supabase credentials (use SupabaseConfig.swift.template as reference)
+laps-routes-generator/Helpers/SupabaseConfig.swift
+
 # IDE
 .vscode/
 .idea/
