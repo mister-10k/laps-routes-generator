@@ -13,7 +13,7 @@ struct SupabaseRoute: Encodable {
     let id: UUID
     let name: String
     let starting_point_id: UUID
-    let midpoint_id: UUID
+    let turnaround_point_id: UUID
     let total_distance_miles: Double
     let outbound_path: [[Double]] // JSONB
     let return_path: [[Double]]   // JSONB
@@ -32,11 +32,11 @@ class SupabaseService {
     ]
     
     func export(city: City, routes: [Route]) async throws {
-        // 1. Collect all unique POIs (start + midpoints)
+        // 1. Collect all unique POIs (start + turnaround points)
         var poisToUpsert = Set<PointOfInterest>()
         poisToUpsert.insert(routes.first!.startingPoint) // Assuming all have same start
         for route in routes {
-            poisToUpsert.insert(route.midpoint)
+            poisToUpsert.insert(route.turnaroundPoint)
         }
         
         let supabasePOIs = poisToUpsert.map { poi in
@@ -58,7 +58,7 @@ class SupabaseService {
                 id: route.id,
                 name: route.name,
                 starting_point_id: route.startingPoint.id,
-                midpoint_id: route.midpoint.id,
+                turnaround_point_id: route.turnaroundPoint.id,
                 total_distance_miles: route.totalDistanceMiles,
                 outbound_path: route.outboundPath.map { [$0.latitude, $0.longitude] },
                 return_path: route.returnPath.map { [$0.latitude, $0.longitude] },

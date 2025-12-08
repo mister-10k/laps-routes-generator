@@ -3,6 +3,7 @@ import MapKit
 
 struct ContentView: View {
     @State private var selectedCity: City = Cities.all[0]
+    @State private var selectedStartingPoint: StartingPoint = Cities.all[0].startingPoints[0]
     @State private var region: MKCoordinateRegion = MKCoordinateRegion(
         center: Cities.all[0].coordinate,
         span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
@@ -16,6 +17,7 @@ struct ContentView: View {
     @State private var groupingMode: GroupingMode = .byDistance
     @State private var skippedThresholds: [Int] = []
     @State private var showSkippedAlert = false
+    @State private var blacklistCount = 0
     
     enum GroupingMode: String, CaseIterable {
         case byDistance = "Distance"
@@ -66,8 +68,19 @@ struct ContentView: View {
                     citiesWithSavedRoutes: citiesWithSavedRoutes
                 )
                 .onChange(of: selectedCity) { newCity in
-                    updateRegion(for: newCity)
+                    // Update starting point to first available for new city
+                    selectedStartingPoint = newCity.startingPoints[0]
+                    updateRegion(for: selectedStartingPoint)
                     loadRoutesForCity(newCity)
+                    refreshBlacklistCount()
+                }
+                
+                StartingPointPickerView(
+                    selectedStartingPoint: $selectedStartingPoint,
+                    startingPoints: selectedCity.startingPoints
+                )
+                .onChange(of: selectedStartingPoint) { newStartingPoint in
+                    updateRegion(for: newStartingPoint)
                 }
                 
                 Spacer()
@@ -79,6 +92,12 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                
+                Button("Clear Blacklist (\(blacklistCount))") {
+                    clearBlacklist()
+                }
+                .foregroundStyle(.orange)
+                .disabled(blacklistCount == 0)
                 
                 if !routes.isEmpty {
                     Button("Clear Routes") {
@@ -211,9 +230,10 @@ struct ContentView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .onAppear {
-            updateRegion(for: selectedCity)
+            updateRegion(for: selectedStartingPoint)
             refreshSavedCitiesList()
             loadRoutesForCity(selectedCity)
+            refreshBlacklistCount()
         }
         .alert("Some Thresholds Not Fully Covered", isPresented: $showSkippedAlert) {
             Button("OK", role: .cancel) { }
@@ -225,9 +245,9 @@ struct ContentView: View {
     
     // MARK: - Actions
     
-    private func updateRegion(for city: City) {
+    private func updateRegion(for startingPoint: StartingPoint) {
         region = MKCoordinateRegion(
-            center: city.coordinate,
+            center: startingPoint.coordinate,
             span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
         )
     }
@@ -258,6 +278,18 @@ struct ContentView: View {
         PersistenceService.shared.deleteRoutes(for: selectedCity.name)
         refreshSavedCitiesList()
         generationStatus = "Routes cleared"
+    }
+    
+    private func clearBlacklist() {
+        // Clear both manual blacklist and per-threshold blacklist
+        PersistenceService.shared.clearAllBlacklists(for: selectedCity.name)
+        refreshBlacklistCount()
+        generationStatus = "All blacklists cleared (manual + per-threshold)"
+    }
+    
+    private func refreshBlacklistCount() {
+        // Show combined count of manual blacklist + per-threshold blacklist
+        blacklistCount = PersistenceService.shared.totalBlacklistCount(for: selectedCity.name)
     }
     
     private func generateRoutes() {
@@ -299,7 +331,7 @@ struct ContentView: View {
             let blacklistedNames = PersistenceService.shared.getBlacklistedNames(for: selectedCity.name)
             
             // Pass existing routes and blacklist so generator doesn't regenerate what we already have
-            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
+            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
             
             await MainActor.run {
                 // Final sync - ensure we have all routes (in case callback missed any)
@@ -355,7 +387,7 @@ struct ContentView: View {
         generationStatus = "Regenerating \(route.name)..."
         
         Task {
-            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity) {
+            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity, startingPoint: selectedStartingPoint) {
                 await MainActor.run {
                     if let index = routes.firstIndex(where: { $0.id == route.id }) {
                         routes[index] = newRoute
@@ -380,7 +412,7 @@ struct ContentView: View {
     
     private func blacklistRoute(_ route: Route) {
         // Add to blacklist (returns false if already blacklisted)
-        let wasAdded = PersistenceService.shared.addToBlacklist(poi: route.midpoint, for: selectedCity.name)
+        let wasAdded = PersistenceService.shared.addToBlacklist(poi: route.turnaroundPoint, for: selectedCity.name)
         
         // Remove from current routes
         routes.removeAll { $0.id == route.id }
@@ -393,13 +425,16 @@ struct ContentView: View {
         // Save updated routes
         saveRoutes()
         
-        let blacklistCount = PersistenceService.shared.blacklistCount(for: selectedCity.name)
+        // Refresh blacklist count
+        refreshBlacklistCount()
+        
         if wasAdded {
             generationStatus = "Blacklisted \(route.name) (\(blacklistCount) total blacklisted)"
         } else {
             generationStatus = "Removed \(route.name) (already blacklisted)"
         }
     }
+    
 }
 
 struct RouteRow: View {

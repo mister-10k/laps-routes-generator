@@ -39,6 +39,13 @@ class PersistenceService {
         return routesDirectory.appendingPathComponent("\(safeFileName)_blacklist.json")
     }
     
+    private func thresholdBlacklistURL(for cityName: String) -> URL {
+        let safeFileName = cityName
+            .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
+        return routesDirectory.appendingPathComponent("\(safeFileName)_threshold_blacklist.json")
+    }
+    
     // MARK: - Save Routes
     
     func saveRoutes(_ routes: [Route], for cityName: String) {
@@ -205,6 +212,94 @@ class PersistenceService {
     /// Get blacklist count for a city
     func blacklistCount(for cityName: String) -> Int {
         return loadBlacklist(for: cityName).count
+    }
+    
+    // MARK: - Per-Threshold Blacklist Management
+    // This blacklist is auto-populated when POIs fail due to outside range or forbidden zones
+    // for a specific duration threshold. Unlike the manual blacklist, this is per-threshold.
+    
+    /// Per-threshold blacklist structure: [threshold_minutes: Set<poi_name>]
+    typealias ThresholdBlacklist = [Int: Set<String>]
+    
+    /// Add a POI to the per-threshold blacklist
+    func addToThresholdBlacklist(poiName: String, threshold: Int, for cityName: String) {
+        var blacklist = loadThresholdBlacklist(for: cityName)
+        
+        if blacklist[threshold] == nil {
+            blacklist[threshold] = []
+        }
+        
+        // Only log if it's a new addition
+        if !blacklist[threshold]!.contains(poiName) {
+            blacklist[threshold]!.insert(poiName)
+            saveThresholdBlacklist(blacklist, for: cityName)
+            print("🚫 Threshold blacklisted: \(poiName) for \(threshold) min in \(cityName)")
+        }
+    }
+    
+    /// Get blacklisted POI names for a specific threshold
+    func getThresholdBlacklistedNames(threshold: Int, for cityName: String) -> Set<String> {
+        let blacklist = loadThresholdBlacklist(for: cityName)
+        return blacklist[threshold] ?? []
+    }
+    
+    /// Get total count of all per-threshold blacklisted entries
+    func thresholdBlacklistCount(for cityName: String) -> Int {
+        let blacklist = loadThresholdBlacklist(for: cityName)
+        return blacklist.values.reduce(0) { $0 + $1.count }
+    }
+    
+    /// Load the per-threshold blacklist for a city
+    func loadThresholdBlacklist(for cityName: String) -> ThresholdBlacklist {
+        let url = thresholdBlacklistURL(for: cityName)
+        
+        guard fileManager.fileExists(atPath: url.path) else {
+            return [:]
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let blacklist = try JSONDecoder().decode(ThresholdBlacklist.self, from: data)
+            return blacklist
+        } catch {
+            print("❌ Failed to load threshold blacklist for \(cityName): \(error.localizedDescription)")
+            return [:]
+        }
+    }
+    
+    /// Save the per-threshold blacklist for a city
+    private func saveThresholdBlacklist(_ blacklist: ThresholdBlacklist, for cityName: String) {
+        let url = thresholdBlacklistURL(for: cityName)
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(blacklist)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("❌ Failed to save threshold blacklist for \(cityName): \(error.localizedDescription)")
+        }
+    }
+    
+    /// Clear the per-threshold blacklist for a city
+    func clearThresholdBlacklist(for cityName: String) {
+        let url = thresholdBlacklistURL(for: cityName)
+        try? fileManager.removeItem(at: url)
+        print("🗑️ Cleared threshold blacklist for \(cityName)")
+    }
+    
+    /// Clear ALL blacklists (manual + per-threshold) for a city
+    func clearAllBlacklists(for cityName: String) {
+        clearBlacklist(for: cityName)
+        clearThresholdBlacklist(for: cityName)
+        print("🗑️ Cleared all blacklists for \(cityName)")
+    }
+    
+    /// Get combined blacklist count (manual + per-threshold unique entries)
+    func totalBlacklistCount(for cityName: String) -> Int {
+        let manualCount = blacklistCount(for: cityName)
+        let thresholdCount = thresholdBlacklistCount(for: cityName)
+        return manualCount + thresholdCount
     }
 }
 

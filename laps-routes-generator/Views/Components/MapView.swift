@@ -1,8 +1,8 @@
 import SwiftUI
 import MapKit
 
-// Custom annotation for midpoint marker
-class MidpointAnnotation: NSObject, MKAnnotation {
+// Custom annotation for turnaround point marker
+class TurnaroundPointAnnotation: NSObject, MKAnnotation {
     let coordinate: CLLocationCoordinate2D
     let title: String?
     let subtitle: String?
@@ -34,7 +34,7 @@ struct MapView: NSViewRepresentable {
         // Update overlays
         nsView.removeOverlays(nsView.overlays)
         
-        // Update annotations (midpoint marker)
+        // Update annotations (turnaround point marker)
         nsView.removeAnnotations(nsView.annotations)
         
         if let route = selectedRoute {
@@ -47,13 +47,13 @@ struct MapView: NSViewRepresentable {
             
             nsView.addOverlays([outbound, inbound])
             
-            // Add midpoint marker
-            let midpointAnnotation = MidpointAnnotation(
-                coordinate: route.midpoint.coordinate,
-                title: route.midpoint.name,
+            // Add turnaround point marker
+            let turnaroundAnnotation = TurnaroundPointAnnotation(
+                coordinate: route.turnaroundPoint.coordinate,
+                title: route.turnaroundPoint.name,
                 subtitle: String(format: "%.1f mi round trip", route.totalDistanceMiles)
             )
-            nsView.addAnnotation(midpointAnnotation)
+            nsView.addAnnotation(turnaroundAnnotation)
         }
     }
     
@@ -92,16 +92,16 @@ struct MapView: NSViewRepresentable {
                 return nil
             }
             
-            // Midpoint annotation - red marker
-            if let midpoint = annotation as? MidpointAnnotation {
-                let identifier = "MidpointMarker"
+            // Turnaround point annotation - red marker
+            if let turnaroundPoint = annotation as? TurnaroundPointAnnotation {
+                let identifier = "TurnaroundPointMarker"
                 var annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
                 
                 if annotationView == nil {
-                    annotationView = MKMarkerAnnotationView(annotation: midpoint, reuseIdentifier: identifier)
+                    annotationView = MKMarkerAnnotationView(annotation: turnaroundPoint, reuseIdentifier: identifier)
                     annotationView?.canShowCallout = true
                 } else {
-                    annotationView?.annotation = midpoint
+                    annotationView?.annotation = turnaroundPoint
                 }
                 
                 // Red marker for destination

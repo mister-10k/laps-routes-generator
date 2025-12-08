@@ -4,6 +4,13 @@ import MapKit
 
 // MARK: - Supporting Types
 
+/// Result of attempting to generate a route
+enum RouteGenerationResult {
+    case success(Route)
+    case failedOSRM           // OSRM returned no paths or errored
+    case failedForbiddenZone  // Route passed through a forbidden zone
+}
+
 struct TimeThreshold {
     let minutes: Int
     
@@ -37,6 +44,83 @@ struct GenerationResult {
     let coverageByThreshold: [Int: Int] // How many routes per threshold
 }
 
+// MARK: - Forbidden Zones (non-walkable areas)
+
+struct ForbiddenZone {
+    let name: String
+    let minLat: Double
+    let maxLat: Double
+    let minLon: Double
+    let maxLon: Double
+    
+    func contains(coordinate: CLLocationCoordinate2D) -> Bool {
+        coordinate.latitude >= minLat &&
+        coordinate.latitude <= maxLat &&
+        coordinate.longitude >= minLon &&
+        coordinate.longitude <= maxLon
+    }
+}
+
+/// Known non-walkable areas that OSRM might incorrectly route through
+let forbiddenZones: [ForbiddenZone] = [
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // NYC TUNNELS (all prohibit pedestrians)
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Lincoln Tunnel - Midtown Manhattan to Weehawken, NJ
+    ForbiddenZone(name: "Lincoln Tunnel", minLat: 40.7580, maxLat: 40.7680, minLon: -74.0300, maxLon: -73.9980),
+    
+    // Lincoln Tunnel Helix (spiral approach road on NJ side)
+    ForbiddenZone(name: "Lincoln Tunnel Helix", minLat: 40.7650, maxLat: 40.7780, minLon: -74.0350, maxLon: -74.0150),
+    
+    // Holland Tunnel - Lower Manhattan to Jersey City, NJ
+    ForbiddenZone(name: "Holland Tunnel", minLat: 40.7240, maxLat: 40.7340, minLon: -74.0450, maxLon: -74.0050),
+    
+    // Queens-Midtown Tunnel - Midtown Manhattan to Long Island City, Queens
+    ForbiddenZone(name: "Queens-Midtown Tunnel", minLat: 40.7400, maxLat: 40.7520, minLon: -73.9750, maxLon: -73.9500),
+    
+    // Hugh L. Carey Tunnel (Brooklyn-Battery Tunnel) - Lower Manhattan to Brooklyn
+    ForbiddenZone(name: "Hugh Carey Tunnel", minLat: 40.6850, maxLat: 40.7050, minLon: -74.0200, maxLon: -73.9950),
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // NYC BRIDGES WITHOUT PEDESTRIAN ACCESS
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Verrazano-Narrows Bridge - Brooklyn to Staten Island (no pedestrians except NYC Marathon day)
+    ForbiddenZone(name: "Verrazano-Narrows Bridge", minLat: 40.5950, maxLat: 40.6150, minLon: -74.0550, maxLon: -74.0300),
+    
+    // Throgs Neck Bridge - Bronx to Queens
+    ForbiddenZone(name: "Throgs Neck Bridge", minLat: 40.7950, maxLat: 40.8150, minLon: -73.8000, maxLon: -73.7750),
+    
+    // Bronx-Whitestone Bridge - Bronx to Queens
+    ForbiddenZone(name: "Bronx-Whitestone Bridge", minLat: 40.7950, maxLat: 40.8150, minLon: -73.8350, maxLon: -73.8100),
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // STATEN ISLAND BRIDGES TO NJ (all prohibit pedestrians)
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Goethals Bridge - Staten Island to Elizabeth, NJ
+    ForbiddenZone(name: "Goethals Bridge", minLat: 40.6300, maxLat: 40.6500, minLon: -74.2050, maxLon: -74.1800),
+    
+    // Bayonne Bridge - Staten Island to Bayonne, NJ
+    ForbiddenZone(name: "Bayonne Bridge", minLat: 40.6350, maxLat: 40.6600, minLon: -74.1500, maxLon: -74.1250),
+    
+    // Outerbridge Crossing - Staten Island to Perth Amboy, NJ
+    ForbiddenZone(name: "Outerbridge Crossing", minLat: 40.5200, maxLat: 40.5350, minLon: -74.2550, maxLon: -74.2350),
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // NYC EXPRESSWAYS/HIGHWAYS (limited access, no pedestrians)
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // FDR Drive - East side of Manhattan (elevated highway sections)
+    // Note: Only including tunnel/underpass sections where pedestrians definitely can't go
+    ForbiddenZone(name: "FDR Drive Tunnel (East 42nd)", minLat: 40.7480, maxLat: 40.7550, minLon: -73.9720, maxLon: -73.9670),
+    
+    // West Side Highway / Joe DiMaggio Highway - tunnel sections
+    ForbiddenZone(name: "West Side Highway Tunnel", minLat: 40.7550, maxLat: 40.7650, minLon: -74.0100, maxLon: -74.0000),
+]
+
 // MARK: - RouteGenerator
 
 class RouteGenerator {
@@ -59,12 +143,13 @@ class RouteGenerator {
     
     // MARK: - Main Generation Method
     
-    func generateRoutes(for city: City, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
+    func generateRoutes(for city: City, startingPoint: StartingPoint, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
         let generationStartTime = Date()
         
         print("\n╔════════════════════════════════════════════════════════════╗")
         print("║  ROUTE GENERATION STARTING                                  ║")
         print("║  City: \(city.name.padding(toLength: 48, withPad: " ", startingAt: 0))  ║")
+        print("║  Starting Point: \(startingPoint.name.padding(toLength: 39, withPad: " ", startingAt: 0))  ║")
         print("║  Target: \(routesPerThreshold) unique routes per time threshold               ║")
         print("║  Thresholds: 5, 10, 15 ... 120 min (\(allThresholds.count) total)             ║")
         print("║  Existing routes to keep: \(String(existingRoutes.count).padding(toLength: 29, withPad: " ", startingAt: 0))  ║")
@@ -73,17 +158,17 @@ class RouteGenerator {
         
         // Start with existing routes
         var allRoutes: [Route] = existingRoutes
-        var usedMidpointIds: Set<UUID> = Set(existingRoutes.map { $0.midpoint.id }) // Track POIs already used
+        var usedTurnaroundPointNames: Set<String> = Set(existingRoutes.map { $0.turnaroundPoint.name }) // Track POIs already used BY NAME to prevent duplicates
         var skippedThresholds: [Int] = []
         
-        let startPoint = PointOfInterest(name: city.landmarkName, coordinate: city.coordinate, type: "landmark")
-        print("Starting point: \(startPoint.name) at (\(String(format: "%.4f", city.coordinate.latitude)), \(String(format: "%.4f", city.coordinate.longitude)))")
-        print("Starting with \(existingRoutes.count) existing routes, \(usedMidpointIds.count) POIs already used, \(blacklistedPOINames.count) blacklisted\n")
+        let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
+        print("Starting point: \(startPoint.name) at (\(String(format: "%.4f", startingPoint.coordinate.latitude)), \(String(format: "%.4f", startingPoint.coordinate.longitude)))")
+        print("Starting with \(existingRoutes.count) existing routes, \(usedTurnaroundPointNames.count) POIs already used, \(blacklistedPOINames.count) blacklisted\n")
         
         // Process thresholds in order
         for threshold in allThresholds {
             print("\n────────────────────────────────────────────────────────────")
-            print("THRESHOLD: \(threshold.minutes) min | Total routes so far: \(allRoutes.count) | Used POIs: \(usedMidpointIds.count)")
+            print("THRESHOLD: \(threshold.minutes) min | Total routes so far: \(allRoutes.count) | Used POIs: \(usedTurnaroundPointNames.count)")
             print("────────────────────────────────────────────────────────────")
             
             await updateProgress("Processing \(threshold.minutes) min threshold...")
@@ -105,19 +190,27 @@ class RouteGenerator {
             do {
                 print("  Searching for POIs at radius \(String(format: "%.2f", radiusMeters)) m (\(String(format: "%.2f", threshold.searchRadiusMiles)) mi)...")
                 
-                let pois = try await POIService.shared.fetchPOIs(near: city.coordinate, radiusInMeters: radiusMeters)
+                let pois = try await POIService.shared.fetchPOIs(near: startingPoint.coordinate, radiusInMeters: radiusMeters)
                 print("  POI search returned \(pois.count) total POIs")
                 
-                // Filter out POIs we've already used
-                let unusedPOIs = pois.filter { !usedMidpointIds.contains($0.id) }
+                // Filter out POIs we've already used (by name to prevent duplicates like "Central Park" appearing multiple times)
+                let unusedPOIs = pois.filter { !usedTurnaroundPointNames.contains($0.name) }
                 let alreadyUsedCount = pois.count - unusedPOIs.count
                 print("  After removing already-used: \(unusedPOIs.count) remaining (\(alreadyUsedCount) already used)")
                 
-                // Filter out blacklisted POIs
+                // Filter out manually blacklisted POIs
                 let nonBlacklistedPOIs = unusedPOIs.filter { !blacklistedPOINames.contains($0.name) }
                 let blacklistedCount = unusedPOIs.count - nonBlacklistedPOIs.count
                 if blacklistedCount > 0 {
-                    print("  After removing blacklisted: \(nonBlacklistedPOIs.count) remaining (\(blacklistedCount) blacklisted)")
+                    print("  After removing manually blacklisted: \(nonBlacklistedPOIs.count) remaining (\(blacklistedCount) blacklisted)")
+                }
+                
+                // Filter out POIs that previously failed for this specific threshold (outside range or forbidden zone)
+                let thresholdBlacklist = PersistenceService.shared.getThresholdBlacklistedNames(threshold: threshold.minutes, for: city.name)
+                let thresholdFilteredPOIs = nonBlacklistedPOIs.filter { !thresholdBlacklist.contains($0.name) }
+                let thresholdBlacklistedCount = nonBlacklistedPOIs.count - thresholdFilteredPOIs.count
+                if thresholdBlacklistedCount > 0 {
+                    print("  After removing threshold-blacklisted (\(threshold.minutes) min): \(thresholdFilteredPOIs.count) remaining (\(thresholdBlacklistedCount) previously failed)")
                 }
                 
                 // Filter POIs by straight-line distance to estimate if they'll produce valid routes
@@ -125,11 +218,11 @@ class RouteGenerator {
                 // - For a target round-trip of X miles, each leg is X/2 miles
                 // - Straight-line distance should be roughly (X/2) / 1.4 = X/2.8
                 // - Allow some tolerance: min = targetDistance/4, max = targetDistance/1.5
-                let startLoc = CLLocation(latitude: city.coordinate.latitude, longitude: city.coordinate.longitude)
+                let startLoc = CLLocation(latitude: startingPoint.coordinate.latitude, longitude: startingPoint.coordinate.longitude)
                 let minStraightLineMeters = (threshold.minDistanceMiles / 4.0) * 1609.34  // Very conservative min
                 let maxStraightLineMeters = (threshold.maxDistanceMiles / 1.5) * 1609.34  // Account for winding roads
                 
-                let availablePOIs = nonBlacklistedPOIs.filter { poi in
+                let availablePOIs = thresholdFilteredPOIs.filter { poi in
                     let poiLoc = CLLocation(latitude: poi.coordinate.latitude, longitude: poi.coordinate.longitude)
                     let straightLineDistance = poiLoc.distance(from: startLoc)
                     // Must be at least 500m away AND within our estimated useful range
@@ -138,7 +231,7 @@ class RouteGenerator {
                            straightLineDistance <= maxStraightLineMeters
                 }
                 
-                let filteredOutCount = nonBlacklistedPOIs.count - availablePOIs.count
+                let filteredOutCount = thresholdFilteredPOIs.count - availablePOIs.count
                 print("  After distance filtering: \(availablePOIs.count) POIs in straight-line range \(String(format: "%.2f", minStraightLineMeters/1609.34))-\(String(format: "%.2f", maxStraightLineMeters/1609.34)) mi (\(filteredOutCount) filtered out)")
                 
                 print("  Target route distance: \(String(format: "%.2f", threshold.targetDistanceMiles)) mi | Valid range: \(String(format: "%.2f", threshold.minDistanceMiles))-\(String(format: "%.2f", threshold.maxDistanceMiles)) mi")
@@ -146,6 +239,7 @@ class RouteGenerator {
                 var generatedForThreshold = 0
                 var attemptedCount = 0
                 var failedOSRM = 0
+                var failedForbiddenZone = 0
                 var outsideRange = 0
                 var consecutiveOutsideRange = 0
                 let maxConsecutiveOutsideRange = 20
@@ -176,11 +270,14 @@ class RouteGenerator {
                     // Try to generate a route to this POI
                     print("    [\(attemptedCount)] [\(currentCount)/\(routesPerThreshold)] Trying: \(poi.name)...")
                     
-                    if let route = await generateRoute(from: startPoint, to: poi, targetDistance: threshold.targetDistanceMiles) {
+                    let result = await generateRoute(from: startPoint, to: poi, targetDistance: threshold.targetDistanceMiles)
+                    
+                    switch result {
+                    case .success(let route):
                         // Verify the route actually works for this threshold
                         if threshold.isValidDistance(route.totalDistanceMiles) {
                             allRoutes.append(route)
-                            usedMidpointIds.insert(poi.id)
+                            usedTurnaroundPointNames.insert(poi.name)
                             generatedForThreshold += 1
                             consecutiveOutsideRange = 0 // Reset on success
                             let newCount = currentCount + 1
@@ -194,16 +291,27 @@ class RouteGenerator {
                         } else {
                             outsideRange += 1
                             consecutiveOutsideRange += 1
-                            print("    [\(attemptedCount)] ✗ OUTSIDE RANGE [\(currentCount)/\(routesPerThreshold)] (\(consecutiveOutsideRange)/\(maxConsecutiveOutsideRange)): \(poi.name) → \(String(format: "%.2f", route.totalDistanceMiles)) mi (need \(String(format: "%.2f", threshold.minDistanceMiles))-\(String(format: "%.2f", threshold.maxDistanceMiles)) mi)")
+                            // Blacklist this POI for this specific threshold - it won't produce valid distance
+                            PersistenceService.shared.addToThresholdBlacklist(poiName: poi.name, threshold: threshold.minutes, for: city.name)
+                            print("    [\(attemptedCount)] ✗ OUTSIDE RANGE [\(currentCount)/\(routesPerThreshold)] (\(consecutiveOutsideRange)/\(maxConsecutiveOutsideRange)): \(poi.name) → \(String(format: "%.2f", route.totalDistanceMiles)) mi (need \(String(format: "%.2f", threshold.minDistanceMiles))-\(String(format: "%.2f", threshold.maxDistanceMiles)) mi) [blacklisted for \(threshold.minutes)min]")
                         }
-                    } else {
+                        
+                    case .failedOSRM:
                         failedOSRM += 1
                         // Don't count OSRM failures toward consecutive outside-range
+                        // Don't blacklist - OSRM might work next time (network issue, etc.)
                         print("    [\(attemptedCount)] ✗ OSRM FAILED [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
+                        
+                    case .failedForbiddenZone:
+                        failedForbiddenZone += 1
+                        // Don't count forbidden zone failures toward consecutive outside-range
+                        // Blacklist this POI for this specific threshold - path goes through forbidden zone
+                        PersistenceService.shared.addToThresholdBlacklist(poiName: poi.name, threshold: threshold.minutes, for: city.name)
+                        print("    [\(attemptedCount)] ✗ FORBIDDEN ZONE [\(currentCount)/\(routesPerThreshold)]: \(poi.name) [blacklisted for \(threshold.minutes)min]")
                     }
                 }
                 
-                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM)")
+                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM), forbiddenZone=\(failedForbiddenZone)")
                 
                 // Final check: did we get enough?
                 let finalCount = allRoutes.filter { threshold.isValidDistance($0.totalDistanceMiles) }.count
@@ -234,7 +342,7 @@ class RouteGenerator {
                 id: route.id,
                 name: route.name,
                 startingPoint: route.startingPoint,
-                midpoint: route.midpoint,
+                turnaroundPoint: route.turnaroundPoint,
                 totalDistanceMiles: route.totalDistanceMiles,
                 distanceBandMiles: route.distanceBandMiles,
                 outboundPath: route.outboundPath,
@@ -267,7 +375,7 @@ class RouteGenerator {
     
     // MARK: - Regenerate Single Route
     
-    func regenerateRoute(oldRoute: Route, city: City) async -> Route? {
+    func regenerateRoute(oldRoute: Route, city: City, startingPoint: StartingPoint) async -> Route? {
         // Find which time thresholds this route serves
         guard let primaryThreshold = allThresholds.first(where: { $0.isValidDistance(oldRoute.totalDistanceMiles) }) else {
             print("Could not find matching threshold for route distance \(oldRoute.totalDistanceMiles)")
@@ -279,21 +387,22 @@ class RouteGenerator {
         let radiusMeters = primaryThreshold.searchRadiusMiles * 1609.34
         
         do {
-            let pois = try await POIService.shared.fetchPOIs(near: city.coordinate, radiusInMeters: radiusMeters)
+            let pois = try await POIService.shared.fetchPOIs(near: startingPoint.coordinate, radiusInMeters: radiusMeters)
             
             // Filter out the current POI and those too close to start
-            let startLoc = CLLocation(latitude: city.coordinate.latitude, longitude: city.coordinate.longitude)
+            let startLoc = CLLocation(latitude: startingPoint.coordinate.latitude, longitude: startingPoint.coordinate.longitude)
             let candidates = pois.filter { poi in
-                if poi.id == oldRoute.midpoint.id { return false }
+                if poi.id == oldRoute.turnaroundPoint.id { return false }
                 let poiLoc = CLLocation(latitude: poi.coordinate.latitude, longitude: poi.coordinate.longitude)
                 return poiLoc.distance(from: startLoc) >= 500
             }.shuffled()
             
-            let startPoint = oldRoute.startingPoint
+            let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
             
             // Try up to 10 candidates
             for poi in candidates.prefix(10) {
-                if let newRoute = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles) {
+                let result = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles)
+                if case .success(let newRoute) = result {
                     if primaryThreshold.isValidDistance(newRoute.totalDistanceMiles) {
                         return newRoute
                     }
@@ -308,12 +417,12 @@ class RouteGenerator {
     
     // MARK: - Private Methods
     
-    private func generateRoute(from start: PointOfInterest, to midpoint: PointOfInterest, targetDistance: Double) async -> Route? {
+    private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double) async -> RouteGenerationResult {
         do {
             print("        → Calling OSRM for outbound & return paths...")
             
-            async let outboundTask = OSRMService.shared.fetchRoutes(from: start.coordinate, to: midpoint.coordinate)
-            async let returnTask = OSRMService.shared.fetchRoutes(from: midpoint.coordinate, to: start.coordinate)
+            async let outboundTask = OSRMService.shared.fetchRoutes(from: start.coordinate, to: turnaroundPoint.coordinate)
+            async let returnTask = OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: start.coordinate)
             
             let (outboundOpts, returnOpts) = try await (outboundTask, returnTask)
             
@@ -321,7 +430,7 @@ class RouteGenerator {
             
             if outboundOpts.isEmpty || returnOpts.isEmpty {
                 print("        → No route options from OSRM")
-                return nil
+                return .failedOSRM
             }
             
             // Find best pair with least overlap
@@ -341,13 +450,20 @@ class RouteGenerator {
             
             guard let (bestOut, bestRet) = bestPair else {
                 print("        → Could not find valid path pair")
-                return nil
+                return .failedOSRM
             }
             
             let totalDistanceMeters = bestOut.distanceMeters + bestRet.distanceMeters
             let totalDistanceMiles = totalDistanceMeters / 1609.34
             
             print("        → Best pair: outbound=\(String(format: "%.2f", bestOut.distanceMeters/1609.34)) mi, return=\(String(format: "%.2f", bestRet.distanceMeters/1609.34)) mi, total=\(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", minOverlap * 100))%")
+            
+            // Check for forbidden zones (tunnels, highways, etc.)
+            let allCoordinates = bestOut.coordinates + bestRet.coordinates
+            if let forbiddenZone = checkForForbiddenZones(coordinates: allCoordinates) {
+                print("        → ⛔ REJECTED: Route passes through \(forbiddenZone)")
+                return .failedForbiddenZone
+            }
             
             // Generate metadata
             let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
@@ -356,10 +472,10 @@ class RouteGenerator {
             // Infer distance band for backwards compatibility
             let distanceBand = inferDistanceBand(from: totalDistanceMiles)
             
-            return Route(
-                name: midpoint.name,
+            let route = Route(
+                name: turnaroundPoint.name,
                 startingPoint: start,
-                midpoint: midpoint,
+                turnaroundPoint: turnaroundPoint,
                 totalDistanceMiles: totalDistanceMiles,
                 distanceBandMiles: distanceBand,
                 outboundPath: bestOut.coordinates,
@@ -368,9 +484,11 @@ class RouteGenerator {
                 validSessionTimes: validTimes
             )
             
+            return .success(route)
+            
         } catch {
-            print("        → OSRM error for \(midpoint.name): \(error)")
-            return nil
+            print("        → OSRM error for \(turnaroundPoint.name): \(error)")
+            return .failedOSRM
         }
     }
     
@@ -405,6 +523,19 @@ class RouteGenerator {
     private func inferDistanceBand(from distance: Double) -> Double {
         let bands: [Double] = [1.0, 2.0, 4.0, 7.5, 9.5, 13.0, 16.0]
         return bands.min(by: { abs($0 - distance) < abs($1 - distance) }) ?? 4.0
+    }
+    
+    /// Check if any coordinates pass through forbidden zones (tunnels, highways, etc.)
+    /// Returns the name of the forbidden zone if found, nil otherwise
+    private func checkForForbiddenZones(coordinates: [CLLocationCoordinate2D]) -> String? {
+        for coord in coordinates {
+            for zone in forbiddenZones {
+                if zone.contains(coordinate: coord) {
+                    return zone.name
+                }
+            }
+        }
+        return nil
     }
     
     @MainActor
