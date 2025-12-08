@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var skippedThresholds: [Int] = []
     @State private var showSkippedAlert = false
     @State private var blacklistCount = 0
+    @State private var searchText: String = ""
     
     enum GroupingMode: String, CaseIterable {
         case byDistance = "Distance"
@@ -33,11 +34,22 @@ struct ContentView: View {
         routes.first { $0.id == selectedRouteId }
     }
     
+    // Filter routes by search text (searches route name and turnaround point name)
+    var filteredRoutes: [Route] {
+        guard !searchText.isEmpty else { return routes }
+        let searchLower = searchText.lowercased()
+        return routes.filter { route in
+            route.name.lowercased().contains(searchLower) ||
+            route.turnaroundPoint.name.lowercased().contains(searchLower) ||
+            route.startingPoint.name.lowercased().contains(searchLower)
+        }
+    }
+    
     // Group routes by distance band
     var routesByDistance: [DistanceGroup] {
         let bands: [Double] = [1.0, 2.0, 4.0, 7.5, 9.5, 13.0, 16.0]
         return bands.compactMap { band in
-            let bandRoutes = routes.filter { $0.distanceBandMiles == band }
+            let bandRoutes = filteredRoutes.filter { $0.distanceBandMiles == band }
             guard !bandRoutes.isEmpty else { return nil }
             return DistanceGroup(band: band, routes: bandRoutes)
         }
@@ -46,7 +58,7 @@ struct ContentView: View {
     // Group routes by time slot
     var routesByTime: [TimeGroup] {
         allTimeSlots.compactMap { duration in
-            let matchingRoutes = routes.filter { $0.validSessionTimes.contains(duration) }
+            let matchingRoutes = filteredRoutes.filter { $0.validSessionTimes.contains(duration) }
             return TimeGroup(duration: duration, routes: matchingRoutes)
         }
     }
@@ -149,6 +161,33 @@ struct ContentView: View {
                                     .foregroundStyle(coverage.covered == coverage.total ? .green : .orange)
                             }
                             
+                            // Search field for filtering routes by location name
+                            HStack {
+                                Image(systemName: "magnifyingglass")
+                                    .foregroundStyle(.secondary)
+                                TextField("Search by location name...", text: $searchText)
+                                    .textFieldStyle(.plain)
+                                if !searchText.isEmpty {
+                                    Button {
+                                        searchText = ""
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(6)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .cornerRadius(6)
+                            
+                            // Show filtered count if searching
+                            if !searchText.isEmpty {
+                                Text("Showing \(filteredRoutes.count) of \(routes.count) routes")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
                             Picker("Group By", selection: $groupingMode) {
                                 ForEach(GroupingMode.allCases, id: \.self) { mode in
                                     Text(mode.rawValue).tag(mode)
@@ -238,6 +277,12 @@ struct ContentView: View {
             loadRoutesForCity(selectedCity)
             refreshBlacklistCount()
         }
+        .onChange(of: selectedRouteId) { newRouteId in
+            if let routeId = newRouteId,
+               let route = routes.first(where: { $0.id == routeId }) {
+                updateRegion(for: route)
+            }
+        }
         .alert("Some Thresholds Not Fully Covered", isPresented: $showSkippedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -252,6 +297,38 @@ struct ContentView: View {
         region = MKCoordinateRegion(
             center: startingPoint.coordinate,
             span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+        )
+    }
+    
+    private func updateRegion(for route: Route) {
+        // Combine all coordinates from the route
+        let allCoordinates = route.outboundPath + route.returnPath
+        
+        guard !allCoordinates.isEmpty else { return }
+        
+        // Calculate the bounding box
+        var minLat = allCoordinates[0].latitude
+        var maxLat = allCoordinates[0].latitude
+        var minLon = allCoordinates[0].longitude
+        var maxLon = allCoordinates[0].longitude
+        
+        for coordinate in allCoordinates {
+            minLat = min(minLat, coordinate.latitude)
+            maxLat = max(maxLat, coordinate.latitude)
+            minLon = min(minLon, coordinate.longitude)
+            maxLon = max(maxLon, coordinate.longitude)
+        }
+        
+        // Calculate center and span
+        let centerLat = (minLat + maxLat) / 2
+        let centerLon = (minLon + maxLon) / 2
+        let spanLat = (maxLat - minLat) * 1.3 // Add 30% padding
+        let spanLon = (maxLon - minLon) * 1.3 // Add 30% padding
+        
+        // Update the region
+        region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon),
+            span: MKCoordinateSpan(latitudeDelta: max(spanLat, 0.01), longitudeDelta: max(spanLon, 0.01))
         )
     }
     
