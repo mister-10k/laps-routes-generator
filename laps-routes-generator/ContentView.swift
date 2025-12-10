@@ -25,19 +25,13 @@ struct ContentView: View {
     @State private var showClearRoutesAlert = false
     @State private var showClearBlacklistAlert = false
     
-    // Forbidden path drawing state
-    @State private var isDrawingForbiddenPath = false
-    @State private var currentDrawingPoints: [CLLocationCoordinate2D] = []
-    @State private var forbiddenPaths: [ForbiddenPath] = []
-    @State private var showClearForbiddenPathsAlert = false
-    @State private var editingForbiddenPathId: UUID? = nil  // Track which path is being edited
-    
-    // Track newly generated routes in current session (cleared on app close or new generation)
+    // Track newly generated routes (persisted until clicked)
     @State private var newlyGeneratedRouteIds: Set<UUID> = []
     
     enum GroupingMode: String, CaseIterable {
         case byDistance = "Distance"
         case byTime = "Time"
+        case byNew = "New"
     }
     
     // All time slots (5, 10, 15, ... 120 minutes)
@@ -77,6 +71,15 @@ struct ContentView: View {
         }
     }
     
+    // Filter routes by "new" status (newly generated, not yet viewed)
+    var newRoutes: [Route] {
+        filteredRoutes.filter { newlyGeneratedRouteIds.contains($0.id) }
+    }
+    
+    var seenRoutes: [Route] {
+        filteredRoutes.filter { !newlyGeneratedRouteIds.contains($0.id) }
+    }
+    
     // Coverage summary
     var coverageSummary: (covered: Int, total: Int) {
         let covered = allTimeSlots.filter { duration in
@@ -100,9 +103,6 @@ struct ContentView: View {
                     updateRegion(for: selectedStartingPoint)
                     loadRoutesForCity(newCity)
                     refreshBlacklistCount()
-                    loadForbiddenPaths()
-                    // Cancel any drawing in progress
-                    cancelDrawing()
                     // Persist selection
                     SelectionPersistence.saveCity(newCity.name)
                 }
@@ -161,148 +161,8 @@ struct ContentView: View {
                     ZStack(alignment: .topLeading) {
                         MapView(
                             region: region,
-                            selectedRoute: selectedRoute,
-                            forbiddenPaths: forbiddenPaths,
-                            isDrawingForbiddenPath: isDrawingForbiddenPath,
-                            currentDrawingPoints: $currentDrawingPoints
+                            selectedRoute: selectedRoute
                         )
-                        
-                        // Forbidden path drawing controls overlay (always visible)
-                        VStack(alignment: .leading, spacing: 8) {
-                            if isDrawingForbiddenPath {
-                                // Drawing/Editing mode controls
-                                HStack(spacing: 8) {
-                                    if editingForbiddenPathId != nil {
-                                        Text("Editing forbidden path...")
-                                            .font(.caption)
-                                            .fontWeight(.semibold)
-                                            .foregroundStyle(.orange)
-                                    } else {
-                                        Text("Drawing forbidden path...")
-                                            .font(.caption)
-                                            .fontWeight(.semibold)
-                                    }
-                                    
-                                    Text("(\(currentDrawingPoints.count) points)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                
-                                HStack(spacing: 8) {
-                                    Button {
-                                        saveForbiddenPath()
-                                    } label: {
-                                        Label(editingForbiddenPathId != nil ? "Update Path" : "Save Path", systemImage: "checkmark.circle.fill")
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .tint(editingForbiddenPathId != nil ? .orange : .red)
-                                    .disabled(currentDrawingPoints.count < 2)
-                                    
-                                    Button {
-                                        // Undo last point
-                                        if !currentDrawingPoints.isEmpty {
-                                            currentDrawingPoints.removeLast()
-                                        }
-                                    } label: {
-                                        Label("Undo", systemImage: "arrow.uturn.backward")
-                                    }
-                                    .disabled(currentDrawingPoints.isEmpty)
-                                    
-                                    Button {
-                                        cancelDrawing()
-                                    } label: {
-                                        Label("Cancel", systemImage: "xmark.circle")
-                                    }
-                                }
-                                
-                                Text("Click on the map to add points along the path you want to forbid")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                // Normal mode - show draw button and forbidden paths list
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack(spacing: 8) {
-                                        Button {
-                                            editingForbiddenPathId = nil  // Clear any editing state
-                                            isDrawingForbiddenPath = true
-                                            currentDrawingPoints = []
-                                        } label: {
-                                            Label("New Forbidden Path", systemImage: "hand.draw")
-                                        }
-                                        .buttonStyle(.bordered)
-                                        
-                                        if !forbiddenPaths.isEmpty {
-                                            Spacer()
-                                            
-                                            Button {
-                                                showClearForbiddenPathsAlert = true
-                                            } label: {
-                                                Label("Clear All", systemImage: "trash")
-                                                    .font(.caption)
-                                            }
-                                            .buttonStyle(.borderless)
-                                            .foregroundStyle(.red)
-                                        }
-                                    }
-                                    
-                                    // List of existing forbidden paths
-                                    if !forbiddenPaths.isEmpty {
-                                        Divider()
-                                        
-                                        Text("Forbidden Paths:")
-                                            .font(.caption)
-                                            .fontWeight(.semibold)
-                                        
-                                        ScrollView {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                ForEach(Array(forbiddenPaths.enumerated()), id: \.element.id) { index, path in
-                                                    HStack {
-                                                        Image(systemName: "line.diagonal")
-                                                            .foregroundStyle(.red)
-                                                            .font(.caption)
-                                                        
-                                                        Text("Path \(index + 1)")
-                                                            .font(.caption)
-                                                        
-                                                        Text("(\(path.coordinates.count) pts, \(Int(path.lengthMeters))m)")
-                                                            .font(.caption2)
-                                                            .foregroundStyle(.secondary)
-                                                        
-                                                        Spacer()
-                                                        
-                                                        Button {
-                                                            editForbiddenPath(path)
-                                                        } label: {
-                                                            Image(systemName: "pencil.circle.fill")
-                                                                .foregroundStyle(.orange.opacity(0.8))
-                                                                .font(.caption)
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                        .help("Edit this forbidden path")
-                                                        
-                                                        Button {
-                                                            deleteForbiddenPath(path)
-                                                        } label: {
-                                                            Image(systemName: "xmark.circle.fill")
-                                                                .foregroundStyle(.red.opacity(0.7))
-                                                                .font(.caption)
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                        .help("Delete this forbidden path")
-                                                    }
-                                                    .padding(.vertical, 2)
-                                                }
-                                            }
-                                        }
-                                        .frame(maxHeight: 120)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(12)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(10)
-                        .padding(10)
                     }
                     .frame(width: geometry.size.width * 0.65)
                     
@@ -370,7 +230,8 @@ struct ContentView: View {
                         Divider()
                         
                         // Routes list based on grouping mode
-                        if groupingMode == .byDistance {
+                        switch groupingMode {
+                        case .byDistance:
                             List(selection: $selectedRouteId) {
                                 ForEach(routesByDistance, id: \.band) { group in
                                     Section {
@@ -379,6 +240,8 @@ struct ContentView: View {
                                                 regenerate(route: route)
                                             } onRemove: {
                                                 removeRoute(route)
+                                            } onMarkSeen: {
+                                                markRouteSeen(route)
                                             }
                                             .tag(route.id)
                                         }
@@ -388,7 +251,8 @@ struct ContentView: View {
                                 }
                             }
                             .listStyle(.sidebar)
-                        } else {
+                            
+                        case .byTime:
                             List(selection: $selectedRouteId) {
                                 ForEach(routesByTime, id: \.duration) { group in
                                     Section {
@@ -397,11 +261,49 @@ struct ContentView: View {
                                                 regenerate(route: route)
                                             } onRemove: {
                                                 removeRoute(route)
+                                            } onMarkSeen: {
+                                                markRouteSeen(route)
                                             }
                                             .tag(route.id)
                                         }
                                     } header: {
                                         TimeSlotHeader(duration: group.duration, count: group.routes.count)
+                                    }
+                                }
+                            }
+                            .listStyle(.sidebar)
+                            
+                        case .byNew:
+                            List(selection: $selectedRouteId) {
+                                if !newRoutes.isEmpty {
+                                    Section {
+                                        ForEach(newRoutes) { route in
+                                            RouteRow(route: route, showTime: true, isNew: true) {
+                                                regenerate(route: route)
+                                            } onRemove: {
+                                                removeRoute(route)
+                                            } onMarkSeen: {
+                                                markRouteSeen(route)
+                                            }
+                                            .tag(route.id)
+                                        }
+                                    } header: {
+                                        NewRoutesHeader(count: newRoutes.count)
+                                    }
+                                }
+                                
+                                if !seenRoutes.isEmpty {
+                                    Section {
+                                        ForEach(seenRoutes) { route in
+                                            RouteRow(route: route, showTime: true, isNew: false) {
+                                                regenerate(route: route)
+                                            } onRemove: {
+                                                removeRoute(route)
+                                            }
+                                            .tag(route.id)
+                                        }
+                                    } header: {
+                                        SeenRoutesHeader(count: seenRoutes.count)
                                     }
                                 }
                             }
@@ -450,9 +352,9 @@ struct ContentView: View {
             refreshSavedCitiesList()
             loadRoutesForCity(selectedCity)
             refreshBlacklistCount()
-            loadForbiddenPaths()
         }
         .onChange(of: selectedRouteId) { newRouteId in
+            // Update map region for newly selected route
             if let routeId = newRouteId,
                let route = routes.first(where: { $0.id == routeId }) {
                 updateRegion(for: route)
@@ -479,14 +381,6 @@ struct ContentView: View {
             }
         } message: {
             Text("This will remove all \(blacklistCount) blacklisted POIs for \(selectedCity.name). Previously blacklisted locations may appear again when generating routes.")
-        }
-        .alert("Clear Forbidden Paths?", isPresented: $showClearForbiddenPathsAlert) {
-            Button("Cancel", role: .cancel) { }
-            Button("Clear", role: .destructive) {
-                clearForbiddenPaths()
-            }
-        } message: {
-            Text("This will remove all \(forbiddenPaths.count) forbidden paths for \(selectedCity.name). Routes using these paths may be generated again.")
         }
         .sheet(isPresented: $showExportPreview) {
             ExportPreviewSheet(
@@ -553,6 +447,8 @@ struct ContentView: View {
             routes = []
             generationStatus = ""
         }
+        // Load persisted "new" route IDs
+        newlyGeneratedRouteIds = PersistenceService.shared.loadNewRouteIds(for: city.name)
     }
     
     private func saveRoutes() {
@@ -604,70 +500,18 @@ struct ContentView: View {
         blacklistCount = PersistenceService.shared.totalBlacklistCount(for: selectedCity.name)
     }
     
-    // MARK: - Forbidden Paths
-    
-    private func loadForbiddenPaths() {
-        forbiddenPaths = PersistenceService.shared.loadForbiddenPaths(for: selectedCity.name)
-    }
-    
-    private func saveForbiddenPath() {
-        guard currentDrawingPoints.count >= 2 else { return }
-        
-        if let editingId = editingForbiddenPathId {
-            // Update existing path: delete old one and create new with same ID
-            PersistenceService.shared.removeForbiddenPath(id: editingId, for: selectedCity.name)
-            let updatedPath = ForbiddenPath(id: editingId, coordinates: currentDrawingPoints)
-            PersistenceService.shared.addForbiddenPath(updatedPath, for: selectedCity.name)
-            generationStatus = "Forbidden path updated (\(Int(updatedPath.lengthMeters))m)"
-        } else {
-            // Create new path
-            let newPath = ForbiddenPath(coordinates: currentDrawingPoints)
-            PersistenceService.shared.addForbiddenPath(newPath, for: selectedCity.name)
-            generationStatus = "Forbidden path saved (\(Int(newPath.lengthMeters))m)"
-        }
-        
-        // Reload and reset
-        loadForbiddenPaths()
-        currentDrawingPoints = []
-        isDrawingForbiddenPath = false
-        editingForbiddenPathId = nil
-    }
-    
-    private func cancelDrawing() {
-        currentDrawingPoints = []
-        isDrawingForbiddenPath = false
-        editingForbiddenPathId = nil
-    }
-    
-    private func editForbiddenPath(_ path: ForbiddenPath) {
-        // Load the path's points into the drawing state
-        editingForbiddenPathId = path.id
-        currentDrawingPoints = path.clCoordinates
-        isDrawingForbiddenPath = true
-    }
-    
-    private func clearForbiddenPaths() {
-        PersistenceService.shared.clearForbiddenPaths(for: selectedCity.name)
-        loadForbiddenPaths()
-        generationStatus = "Forbidden paths cleared"
-    }
-    
-    private func deleteForbiddenPath(_ path: ForbiddenPath) {
-        PersistenceService.shared.removeForbiddenPath(id: path.id, for: selectedCity.name)
-        loadForbiddenPaths()
-        generationStatus = "Forbidden path deleted"
-    }
-    
     private func generateRoutes() {
         isGenerating = true
         generationStatus = "Starting..."
         skippedThresholds = []
         
-        // Clear the "new" tags from previous generation
+        // Clear the "new" tags from previous generation (both in memory and persisted)
         newlyGeneratedRouteIds = []
+        PersistenceService.shared.clearNewRouteIds(for: selectedCity.name)
         
         // Keep track of existing routes to pass to generator
         let existingRoutes = self.routes
+        let cityName = selectedCity.name
         
         // Set up progress callback
         RouteGenerator.shared.onProgressUpdate = { message in
@@ -682,15 +526,15 @@ struct ContentView: View {
                 // Only add if not already in our list (existing routes are passed to generator)
                 if !self.routes.contains(where: { $0.id == newRoute.id }) {
                     self.routes.append(newRoute)
-                    // Mark this route as newly generated
+                    // Mark this route as newly generated (both in memory and persisted)
                     self.newlyGeneratedRouteIds.insert(newRoute.id)
+                    PersistenceService.shared.addNewRouteId(newRoute.id, for: cityName)
                 }
             }
         }
         
         // Set up incremental save callback - routes are saved as they're generated
         // This ensures progress is preserved even if app is closed mid-generation
-        let cityName = selectedCity.name
         RouteGenerator.shared.onSaveRoutes = { routes in
             Task { @MainActor in
                 PersistenceService.shared.saveRoutes(routes, for: cityName)
@@ -700,10 +544,9 @@ struct ContentView: View {
         Task {
             // Get blacklisted POI names for this city
             let blacklistedNames = PersistenceService.shared.getBlacklistedNames(for: selectedCity.name)
-            let currentForbiddenPaths = PersistenceService.shared.loadForbiddenPaths(for: selectedCity.name)
             
-            // Pass existing routes, blacklist, and forbidden paths so generator doesn't regenerate what we already have
-            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames, forbiddenPaths: currentForbiddenPaths)
+            // Pass existing routes and blacklist so generator doesn't regenerate what we already have
+            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
             
             await MainActor.run {
                 // Final sync - ensure we have all routes (in case callback missed any)
@@ -776,19 +619,31 @@ struct ContentView: View {
     private func regenerate(route: Route) {
         guard !isGenerating else { return }
         isGenerating = true
-        generationStatus = "Regenerating \(route.name)..."
+        generationStatus = "Finding alternative path to \(route.name)..."
+        
+        // Remember if the old route was marked as "new"
+        let wasNew = newlyGeneratedRouteIds.contains(route.id)
         
         Task {
-            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection) {
+            // Pass all existing routes so regenerate can avoid duplicate paths
+            if let newRoute = await RouteGenerator.shared.regenerateRoute(oldRoute: route, city: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection, existingRoutes: routes) {
                 await MainActor.run {
                     if let index = routes.firstIndex(where: { $0.id == route.id }) {
                         routes[index] = newRoute
                         if selectedRouteId == route.id {
                             selectedRouteId = newRoute.id
                         }
+                        
+                        // Preserve "NEW" status: if old route was new, mark new route as new too
+                        if wasNew {
+                            newlyGeneratedRouteIds.remove(route.id)
+                            newlyGeneratedRouteIds.insert(newRoute.id)
+                            PersistenceService.shared.markRouteSeen(id: route.id, for: selectedCity.name)
+                            PersistenceService.shared.addNewRouteId(newRoute.id, for: selectedCity.name)
+                        }
                     }
                     isGenerating = false
-                    generationStatus = "Regenerated"
+                    generationStatus = "Found alternative path!"
                     
                     // Auto-save after regeneration
                     saveRoutes()
@@ -796,7 +651,7 @@ struct ContentView: View {
             } else {
                 await MainActor.run {
                     isGenerating = false
-                    generationStatus = "Regeneration failed"
+                    generationStatus = "No alternative path found (all routes too similar)"
                 }
             }
         }
@@ -817,6 +672,12 @@ struct ContentView: View {
         generationStatus = "Removed \(route.name)"
     }
     
+    private func markRouteSeen(_ route: Route) {
+        // Remove from newly generated set
+        newlyGeneratedRouteIds.remove(route.id)
+        PersistenceService.shared.markRouteSeen(id: route.id, for: selectedCity.name)
+    }
+    
 }
 
 struct RouteRow: View {
@@ -825,6 +686,7 @@ struct RouteRow: View {
     var isNew: Bool = false
     let onRegenerate: () -> Void
     let onRemove: () -> Void
+    var onMarkSeen: (() -> Void)? = nil
     
     var body: some View {
         HStack(alignment: .top) {
@@ -834,13 +696,24 @@ struct RouteRow: View {
                         .font(.system(size: 13, weight: .medium))
                     
                     if isNew {
-                        Text("NEW")
+                        // Clickable NEW badge - click to dismiss
+                        Button {
+                            onMarkSeen?()
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text("NEW")
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 7, weight: .bold))
+                            }
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
                             .background(Color.green)
                             .cornerRadius(4)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Click to dismiss NEW tag")
                     }
                 }
                 
@@ -975,6 +848,48 @@ struct TimeSlotHeader: View {
             Text("\(count) route\(count == 1 ? "" : "s")")
                 .font(.system(size: 11))
                 .foregroundColor(isCovered ? .secondary : .orange)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct NewRoutesHeader: View {
+    let count: Int
+    
+    var body: some View {
+        HStack {
+            Image(systemName: "sparkles")
+                .foregroundStyle(.green)
+                .font(.system(size: 10))
+            
+            Text("New Routes")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.green)
+            
+            Spacer()
+            
+            Text("\(count) route\(count == 1 ? "" : "s")")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct SeenRoutesHeader: View {
+    let count: Int
+    
+    var body: some View {
+        HStack {
+            Text("Previously Viewed")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+            
+            Spacer()
+            
+            Text("\(count) route\(count == 1 ? "" : "s")")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
