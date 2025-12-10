@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 class PersistenceService {
     static let shared = PersistenceService()
@@ -44,6 +45,13 @@ class PersistenceService {
             .replacingOccurrences(of: " ", with: "_")
             .lowercased()
         return routesDirectory.appendingPathComponent("\(safeFileName)_threshold_blacklist.json")
+    }
+    
+    private func forbiddenPathsURL(for cityName: String) -> URL {
+        let safeFileName = cityName
+            .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
+        return routesDirectory.appendingPathComponent("\(safeFileName)_forbidden_paths.json")
     }
     
     // MARK: - Save Routes
@@ -300,6 +308,82 @@ class PersistenceService {
         let manualCount = blacklistCount(for: cityName)
         let thresholdCount = thresholdBlacklistCount(for: cityName)
         return manualCount + thresholdCount
+    }
+    
+    // MARK: - Forbidden Paths Management
+    // Forbidden paths are manually drawn path segments that should be avoided in route generation.
+    
+    /// Add a forbidden path for a city
+    func addForbiddenPath(_ path: ForbiddenPath, for cityName: String) {
+        var paths = loadForbiddenPaths(for: cityName)
+        paths.append(path)
+        saveForbiddenPaths(paths, for: cityName)
+        print("🚫 Added forbidden path (\(path.coordinates.count) points, \(Int(path.lengthMeters))m) for \(cityName)")
+    }
+    
+    /// Remove a forbidden path by ID
+    func removeForbiddenPath(id: UUID, for cityName: String) {
+        var paths = loadForbiddenPaths(for: cityName)
+        paths.removeAll { $0.id == id }
+        saveForbiddenPaths(paths, for: cityName)
+        print("✅ Removed forbidden path for \(cityName)")
+    }
+    
+    /// Load all forbidden paths for a city
+    func loadForbiddenPaths(for cityName: String) -> [ForbiddenPath] {
+        let url = forbiddenPathsURL(for: cityName)
+        
+        guard fileManager.fileExists(atPath: url.path) else {
+            return []
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let paths = try JSONDecoder().decode([ForbiddenPath].self, from: data)
+            return paths
+        } catch {
+            print("❌ Failed to load forbidden paths for \(cityName): \(error.localizedDescription)")
+            return []
+        }
+    }
+    
+    /// Save forbidden paths for a city
+    private func saveForbiddenPaths(_ paths: [ForbiddenPath], for cityName: String) {
+        let url = forbiddenPathsURL(for: cityName)
+        
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            let data = try encoder.encode(paths)
+            try data.write(to: url, options: .atomic)
+            print("💾 Saved \(paths.count) forbidden paths for \(cityName)")
+        } catch {
+            print("❌ Failed to save forbidden paths for \(cityName): \(error.localizedDescription)")
+        }
+    }
+    
+    /// Clear all forbidden paths for a city
+    func clearForbiddenPaths(for cityName: String) {
+        let url = forbiddenPathsURL(for: cityName)
+        try? fileManager.removeItem(at: url)
+        print("🗑️ Cleared forbidden paths for \(cityName)")
+    }
+    
+    /// Get forbidden paths count for a city
+    func forbiddenPathsCount(for cityName: String) -> Int {
+        return loadForbiddenPaths(for: cityName).count
+    }
+    
+    /// Check if any forbidden path contains the given route coordinates
+    func routeUsesForbiddenPath(routeCoordinates: [CLLocationCoordinate2D], for cityName: String) -> Bool {
+        let forbiddenPaths = loadForbiddenPaths(for: cityName)
+        
+        for path in forbiddenPaths {
+            if path.containsSegment(routeCoordinates) {
+                return true
+            }
+        }
+        return false
     }
 }
 

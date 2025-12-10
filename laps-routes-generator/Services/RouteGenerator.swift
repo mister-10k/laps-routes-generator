@@ -8,6 +8,7 @@ import MapKit
 enum RouteGenerationResult {
     case success(Route)
     case failedOSRM           // OSRM returned no paths or errored
+    case failedForbiddenPath  // Route uses a forbidden path
 }
 
 struct TimeThreshold {
@@ -65,7 +66,7 @@ class RouteGenerator {
     
     // MARK: - Main Generation Method
     
-    func generateRoutes(for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
+    func generateRoutes(for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = [], forbiddenPaths: [ForbiddenPath] = []) async -> GenerationResult {
         let generationStartTime = Date()
         
         print("\n╔════════════════════════════════════════════════════════════╗")
@@ -77,6 +78,7 @@ class RouteGenerator {
         print("║  Thresholds: 5, 10, 15 ... 120 min (\(allThresholds.count) total)             ║")
         print("║  Existing routes to keep: \(String(existingRoutes.count).padding(toLength: 29, withPad: " ", startingAt: 0))  ║")
         print("║  Blacklisted POIs: \(String(blacklistedPOINames.count).padding(toLength: 36, withPad: " ", startingAt: 0))  ║")
+        print("║  Forbidden paths: \(String(forbiddenPaths.count).padding(toLength: 37, withPad: " ", startingAt: 0))  ║")
         print("╚════════════════════════════════════════════════════════════╝\n")
         
         // Start with existing routes
@@ -175,6 +177,7 @@ class RouteGenerator {
                 var generatedForThreshold = 0
                 var attemptedCount = 0
                 var failedOSRM = 0
+                var failedForbiddenPath = 0
                 var outsideRange = 0
                 var consecutiveOutsideRange = 0
                 let maxConsecutiveOutsideRange = 20
@@ -209,8 +212,17 @@ class RouteGenerator {
                     
                     switch result {
                     case .success(let route):
-                        // Verify the route actually works for this threshold
-                        if threshold.isValidDistance(route.totalDistanceMiles) {
+                        // Check if route uses any forbidden paths
+                        let allCoordinates = route.outboundPath + route.returnPath
+                        let usesForbiddenPath = forbiddenPaths.contains { $0.containsSegment(allCoordinates) }
+                        
+                        if usesForbiddenPath {
+                            failedForbiddenPath += 1
+                            // Blacklist this POI - it requires a forbidden path
+                            PersistenceService.shared.addToThresholdBlacklist(poiName: poi.name, threshold: threshold.minutes, for: city.name)
+                            print("    [\(attemptedCount)] ✗ FORBIDDEN PATH [\(currentCount)/\(routesPerThreshold)]: \(poi.name) [blacklisted for \(threshold.minutes)min]")
+                        } else if threshold.isValidDistance(route.totalDistanceMiles) {
+                            // Verify the route actually works for this threshold
                             allRoutes.append(route)
                             usedTurnaroundPointNames.insert(poi.name)
                             generatedForThreshold += 1
@@ -236,10 +248,15 @@ class RouteGenerator {
                         // Don't count OSRM failures toward consecutive outside-range
                         // Don't blacklist - OSRM might work next time (network issue, etc.)
                         print("    [\(attemptedCount)] ✗ OSRM FAILED [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
+                    
+                    case .failedForbiddenPath:
+                        // This case is handled above in .success, but kept for completeness
+                        failedForbiddenPath += 1
+                        print("    [\(attemptedCount)] ✗ FORBIDDEN PATH [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
                     }
                 }
                 
-                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM)")
+                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM), forbiddenPath=\(failedForbiddenPath)")
                 
                 // Final check: did we get enough?
                 let finalCount = allRoutes.filter { threshold.isValidDistance($0.totalDistanceMiles) }.count
