@@ -90,6 +90,8 @@ struct ContentView: View {
                     updateRegion(for: selectedStartingPoint)
                     loadRoutesForCity(newCity)
                     refreshBlacklistCount()
+                    // Persist selection
+                    SelectionPersistence.saveCity(newCity.name)
                 }
                 
                 StartingPointPickerView(
@@ -98,9 +100,15 @@ struct ContentView: View {
                 )
                 .onChange(of: selectedStartingPoint) { newStartingPoint in
                     updateRegion(for: newStartingPoint)
+                    // Persist selection
+                    SelectionPersistence.saveStartingPoint(newStartingPoint.name)
                 }
                 
                 DirectionPickerView(selectedDirection: $selectedDirection)
+                    .onChange(of: selectedDirection) { newDirection in
+                        // Persist selection
+                        SelectionPersistence.saveDirection(newDirection)
+                    }
                 
                 Spacer()
                 
@@ -277,6 +285,9 @@ struct ContentView: View {
         }
         .toast($currentToast)
         .onAppear {
+            // Load saved selections
+            loadSavedSelections()
+            
             updateRegion(for: selectedStartingPoint)
             refreshSavedCitiesList()
             loadRoutesForCity(selectedCity)
@@ -384,6 +395,26 @@ struct ContentView: View {
     
     private func refreshSavedCitiesList() {
         citiesWithSavedRoutes = Set(PersistenceService.shared.citiesWithSavedRoutes())
+    }
+    
+    private func loadSavedSelections() {
+        // Load saved city
+        if let savedCity = SelectionPersistence.loadCity(from: Cities.all) {
+            selectedCity = savedCity
+            
+            // Load saved starting point for this city
+            if let savedStartingPoint = SelectionPersistence.loadStartingPoint(for: savedCity) {
+                selectedStartingPoint = savedStartingPoint
+            } else {
+                // Fall back to first starting point if saved one not found
+                selectedStartingPoint = savedCity.startingPoints[0]
+            }
+        }
+        
+        // Load saved direction
+        if let savedDirection = SelectionPersistence.loadDirection() {
+            selectedDirection = savedDirection
+        }
     }
     
     private func clearRoutes() {

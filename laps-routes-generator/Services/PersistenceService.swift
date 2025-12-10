@@ -215,7 +215,7 @@ class PersistenceService {
     }
     
     // MARK: - Per-Threshold Blacklist Management
-    // This blacklist is auto-populated when POIs fail due to outside range or forbidden zones
+    // This blacklist is auto-populated when POIs fail due to outside range
     // for a specific duration threshold. Unlike the manual blacklist, this is per-threshold.
     
     /// Per-threshold blacklist structure: [threshold_minutes: Set<poi_name>]

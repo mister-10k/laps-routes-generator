@@ -8,7 +8,6 @@ import MapKit
 enum RouteGenerationResult {
     case success(Route)
     case failedOSRM           // OSRM returned no paths or errored
-    case failedForbiddenZone  // Route passed through a forbidden zone
 }
 
 struct TimeThreshold {
@@ -43,83 +42,6 @@ struct GenerationResult {
     let skippedThresholds: [Int] // Time thresholds that couldn't get 10 routes
     let coverageByThreshold: [Int: Int] // How many routes per threshold
 }
-
-// MARK: - Forbidden Zones (non-walkable areas)
-
-struct ForbiddenZone {
-    let name: String
-    let minLat: Double
-    let maxLat: Double
-    let minLon: Double
-    let maxLon: Double
-    
-    func contains(coordinate: CLLocationCoordinate2D) -> Bool {
-        coordinate.latitude >= minLat &&
-        coordinate.latitude <= maxLat &&
-        coordinate.longitude >= minLon &&
-        coordinate.longitude <= maxLon
-    }
-}
-
-/// Known non-walkable areas that OSRM might incorrectly route through
-let forbiddenZones: [ForbiddenZone] = [
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // NYC TUNNELS (all prohibit pedestrians)
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // Lincoln Tunnel - Midtown Manhattan to Weehawken, NJ
-    ForbiddenZone(name: "Lincoln Tunnel", minLat: 40.7580, maxLat: 40.7680, minLon: -74.0300, maxLon: -73.9980),
-    
-    // Lincoln Tunnel Helix (spiral approach road on NJ side)
-    ForbiddenZone(name: "Lincoln Tunnel Helix", minLat: 40.7650, maxLat: 40.7780, minLon: -74.0350, maxLon: -74.0150),
-    
-    // Holland Tunnel - Lower Manhattan to Jersey City, NJ
-    ForbiddenZone(name: "Holland Tunnel", minLat: 40.7240, maxLat: 40.7340, minLon: -74.0450, maxLon: -74.0050),
-    
-    // Queens-Midtown Tunnel - Midtown Manhattan to Long Island City, Queens
-    ForbiddenZone(name: "Queens-Midtown Tunnel", minLat: 40.7400, maxLat: 40.7520, minLon: -73.9750, maxLon: -73.9500),
-    
-    // Hugh L. Carey Tunnel (Brooklyn-Battery Tunnel) - Lower Manhattan to Brooklyn
-    ForbiddenZone(name: "Hugh Carey Tunnel", minLat: 40.6850, maxLat: 40.7050, minLon: -74.0200, maxLon: -73.9950),
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // NYC BRIDGES WITHOUT PEDESTRIAN ACCESS
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // Verrazano-Narrows Bridge - Brooklyn to Staten Island (no pedestrians except NYC Marathon day)
-    ForbiddenZone(name: "Verrazano-Narrows Bridge", minLat: 40.5950, maxLat: 40.6150, minLon: -74.0550, maxLon: -74.0300),
-    
-    // Throgs Neck Bridge - Bronx to Queens
-    ForbiddenZone(name: "Throgs Neck Bridge", minLat: 40.7950, maxLat: 40.8150, minLon: -73.8000, maxLon: -73.7750),
-    
-    // Bronx-Whitestone Bridge - Bronx to Queens
-    ForbiddenZone(name: "Bronx-Whitestone Bridge", minLat: 40.7950, maxLat: 40.8150, minLon: -73.8350, maxLon: -73.8100),
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // STATEN ISLAND BRIDGES TO NJ (all prohibit pedestrians)
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // Goethals Bridge - Staten Island to Elizabeth, NJ
-    ForbiddenZone(name: "Goethals Bridge", minLat: 40.6300, maxLat: 40.6500, minLon: -74.2050, maxLon: -74.1800),
-    
-    // Bayonne Bridge - Staten Island to Bayonne, NJ
-    ForbiddenZone(name: "Bayonne Bridge", minLat: 40.6350, maxLat: 40.6600, minLon: -74.1500, maxLon: -74.1250),
-    
-    // Outerbridge Crossing - Staten Island to Perth Amboy, NJ
-    ForbiddenZone(name: "Outerbridge Crossing", minLat: 40.5200, maxLat: 40.5350, minLon: -74.2550, maxLon: -74.2350),
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // NYC EXPRESSWAYS/HIGHWAYS (limited access, no pedestrians)
-    // ═══════════════════════════════════════════════════════════════════
-    
-    // FDR Drive - East side of Manhattan (elevated highway sections)
-    // Note: Only including tunnel/underpass sections where pedestrians definitely can't go
-    ForbiddenZone(name: "FDR Drive Tunnel (East 42nd)", minLat: 40.7480, maxLat: 40.7550, minLon: -73.9720, maxLon: -73.9670),
-    
-    // West Side Highway / Joe DiMaggio Highway - tunnel sections
-    ForbiddenZone(name: "West Side Highway Tunnel", minLat: 40.7550, maxLat: 40.7650, minLon: -74.0100, maxLon: -74.0000),
-]
 
 // MARK: - RouteGenerator
 
@@ -206,7 +128,7 @@ class RouteGenerator {
                     print("  After removing manually blacklisted: \(nonBlacklistedPOIs.count) remaining (\(blacklistedCount) blacklisted)")
                 }
                 
-                // Filter out POIs that previously failed for this specific threshold (outside range or forbidden zone)
+                // Filter out POIs that previously failed for this specific threshold (outside range)
                 let thresholdBlacklist = PersistenceService.shared.getThresholdBlacklistedNames(threshold: threshold.minutes, for: city.name)
                 let thresholdFilteredPOIs = nonBlacklistedPOIs.filter { !thresholdBlacklist.contains($0.name) }
                 let thresholdBlacklistedCount = nonBlacklistedPOIs.count - thresholdFilteredPOIs.count
@@ -253,7 +175,6 @@ class RouteGenerator {
                 var generatedForThreshold = 0
                 var attemptedCount = 0
                 var failedOSRM = 0
-                var failedForbiddenZone = 0
                 var outsideRange = 0
                 var consecutiveOutsideRange = 0
                 let maxConsecutiveOutsideRange = 20
@@ -315,17 +236,10 @@ class RouteGenerator {
                         // Don't count OSRM failures toward consecutive outside-range
                         // Don't blacklist - OSRM might work next time (network issue, etc.)
                         print("    [\(attemptedCount)] ✗ OSRM FAILED [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
-                        
-                    case .failedForbiddenZone:
-                        failedForbiddenZone += 1
-                        // Don't count forbidden zone failures toward consecutive outside-range
-                        // Blacklist this POI for this specific threshold - path goes through forbidden zone
-                        PersistenceService.shared.addToThresholdBlacklist(poiName: poi.name, threshold: threshold.minutes, for: city.name)
-                        print("    [\(attemptedCount)] ✗ FORBIDDEN ZONE [\(currentCount)/\(routesPerThreshold)]: \(poi.name) [blacklisted for \(threshold.minutes)min]")
                     }
                 }
                 
-                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM), forbiddenZone=\(failedForbiddenZone)")
+                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM)")
                 
                 // Final check: did we get enough?
                 let finalCount = allRoutes.filter { threshold.isValidDistance($0.totalDistanceMiles) }.count
@@ -513,13 +427,6 @@ class RouteGenerator {
             
             print("        → Best pair: outbound=\(String(format: "%.2f", bestOut.distanceMeters/1609.34)) mi, return=\(String(format: "%.2f", bestRet.distanceMeters/1609.34)) mi, total=\(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", minOverlap * 100))%")
             
-            // Check for forbidden zones (tunnels, highways, etc.)
-            let allCoordinates = bestOut.coordinates + bestRet.coordinates
-            if let forbiddenZone = checkForForbiddenZones(coordinates: allCoordinates) {
-                print("        → ⛔ REJECTED: Route passes through \(forbiddenZone)")
-                return .failedForbiddenZone
-            }
-            
             // Generate metadata
             let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
             
@@ -559,19 +466,6 @@ class RouteGenerator {
     private func inferDistanceBand(from distance: Double) -> Double {
         let bands: [Double] = [1.0, 2.0, 4.0, 7.5, 9.5, 13.0, 16.0]
         return bands.min(by: { abs($0 - distance) < abs($1 - distance) }) ?? 4.0
-    }
-    
-    /// Check if any coordinates pass through forbidden zones (tunnels, highways, etc.)
-    /// Returns the name of the forbidden zone if found, nil otherwise
-    private func checkForForbiddenZones(coordinates: [CLLocationCoordinate2D]) -> String? {
-        for coord in coordinates {
-            for zone in forbiddenZones {
-                if zone.contains(coordinate: coord) {
-                    return zone.name
-                }
-            }
-        }
-        return nil
     }
     
     @MainActor
