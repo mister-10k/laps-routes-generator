@@ -7,8 +7,8 @@ import MapKit
 /// Result of attempting to generate a route
 enum RouteGenerationResult {
     case success(Route)
-    case failedOSRM           // OSRM returned no paths or errored
-    case failedForbiddenPath  // Route uses a forbidden path
+    case failedRouting        // Routing API returned no paths (can retry with different POI)
+    case fatalAPIError(String) // API key/billing issue - stop everything immediately
 }
 
 struct TimeThreshold {
@@ -66,7 +66,7 @@ class RouteGenerator {
     
     // MARK: - Main Generation Method
     
-    func generateRoutes(for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = [], forbiddenPaths: [ForbiddenPath] = []) async -> GenerationResult {
+    func generateRoutes(for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
         let generationStartTime = Date()
         
         print("\n╔════════════════════════════════════════════════════════════╗")
@@ -78,7 +78,6 @@ class RouteGenerator {
         print("║  Thresholds: 5, 10, 15 ... 120 min (\(allThresholds.count) total)             ║")
         print("║  Existing routes to keep: \(String(existingRoutes.count).padding(toLength: 29, withPad: " ", startingAt: 0))  ║")
         print("║  Blacklisted POIs: \(String(blacklistedPOINames.count).padding(toLength: 36, withPad: " ", startingAt: 0))  ║")
-        print("║  Forbidden paths: \(String(forbiddenPaths.count).padding(toLength: 37, withPad: " ", startingAt: 0))  ║")
         print("╚════════════════════════════════════════════════════════════╝\n")
         
         // Start with existing routes
@@ -176,8 +175,7 @@ class RouteGenerator {
                 
                 var generatedForThreshold = 0
                 var attemptedCount = 0
-                var failedOSRM = 0
-                var failedForbiddenPath = 0
+                var failedRouting = 0
                 var outsideRange = 0
                 var consecutiveOutsideRange = 0
                 let maxConsecutiveOutsideRange = 20
@@ -212,17 +210,8 @@ class RouteGenerator {
                     
                     switch result {
                     case .success(let route):
-                        // Check if route uses any forbidden paths
-                        let allCoordinates = route.outboundPath + route.returnPath
-                        let usesForbiddenPath = forbiddenPaths.contains { $0.containsSegment(allCoordinates) }
-                        
-                        if usesForbiddenPath {
-                            failedForbiddenPath += 1
-                            // Blacklist this POI - it requires a forbidden path
-                            PersistenceService.shared.addToThresholdBlacklist(poiName: poi.name, threshold: threshold.minutes, for: city.name)
-                            print("    [\(attemptedCount)] ✗ FORBIDDEN PATH [\(currentCount)/\(routesPerThreshold)]: \(poi.name) [blacklisted for \(threshold.minutes)min]")
-                        } else if threshold.isValidDistance(route.totalDistanceMiles) {
-                            // Verify the route actually works for this threshold
+                        // Verify the route actually works for this threshold
+                        if threshold.isValidDistance(route.totalDistanceMiles) {
                             allRoutes.append(route)
                             usedTurnaroundPointNames.insert(poi.name)
                             generatedForThreshold += 1
@@ -243,20 +232,34 @@ class RouteGenerator {
                             print("    [\(attemptedCount)] ✗ OUTSIDE RANGE [\(currentCount)/\(routesPerThreshold)] (\(consecutiveOutsideRange)/\(maxConsecutiveOutsideRange)): \(poi.name) → \(String(format: "%.2f", route.totalDistanceMiles)) mi (need \(String(format: "%.2f", threshold.minDistanceMiles))-\(String(format: "%.2f", threshold.maxDistanceMiles)) mi) [blacklisted for \(threshold.minutes)min]")
                         }
                         
-                    case .failedOSRM:
-                        failedOSRM += 1
-                        // Don't count OSRM failures toward consecutive outside-range
-                        // Don't blacklist - OSRM might work next time (network issue, etc.)
-                        print("    [\(attemptedCount)] ✗ OSRM FAILED [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
-                    
-                    case .failedForbiddenPath:
-                        // This case is handled above in .success, but kept for completeness
-                        failedForbiddenPath += 1
-                        print("    [\(attemptedCount)] ✗ FORBIDDEN PATH [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
+                    case .failedRouting:
+                        failedRouting += 1
+                        // Don't count routing failures toward consecutive outside-range
+                        // Don't blacklist - routing might work next time (network issue, etc.)
+                        print("    [\(attemptedCount)] ✗ ROUTING FAILED [\(currentCount)/\(routesPerThreshold)]: \(poi.name)")
+                        
+                    case .fatalAPIError(let message):
+                        // STOP EVERYTHING - API key or billing issue
+                        print("\n🛑🛑🛑 FATAL API ERROR - STOPPING GENERATION 🛑🛑🛑")
+                        print("   Error: \(message)")
+                        print("   Generated \(allRoutes.count) routes before stopping.")
+                        print("🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑\n")
+                        
+                        // Save what we have and return immediately
+                        await saveRoutesIncrementally(allRoutes)
+                        await MainActor.run {
+                            onProgressUpdate?("⛔️ API Error: \(message)")
+                        }
+                        
+                        return GenerationResult(
+                            routes: allRoutes,
+                            skippedThresholds: Array(Set(skippedThresholds)),
+                            coverageByThreshold: [:]
+                        )
                     }
                 }
                 
-                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), osrmFailed=\(failedOSRM), forbiddenPath=\(failedForbiddenPath)")
+                print("  Summary for \(threshold.minutes) min: attempted=\(attemptedCount), success=\(generatedForThreshold), outsideRange=\(outsideRange), routingFailed=\(failedRouting)")
                 
                 // Final check: did we get enough?
                 let finalCount = allRoutes.filter { threshold.isValidDistance($0.totalDistanceMiles) }.count
@@ -320,54 +323,95 @@ class RouteGenerator {
     
     // MARK: - Regenerate Single Route
     
-    func regenerateRoute(oldRoute: Route, city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference) async -> Route? {
-        // Find which time thresholds this route serves
-        guard let primaryThreshold = allThresholds.first(where: { $0.isValidDistance(oldRoute.totalDistanceMiles) }) else {
-            print("Could not find matching threshold for route distance \(oldRoute.totalDistanceMiles)")
-            return nil
-        }
+    /// Regenerates a route to the SAME turnaround point but with a DIFFERENT path
+    /// Tries to find an alternative route that doesn't overlap too much with ANY existing routes
+    func regenerateRoute(oldRoute: Route, city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = []) async -> Route? {
+        print("Regenerating route to \(oldRoute.turnaroundPoint.name) with different path...")
         
-        print("Regenerating route for \(primaryThreshold.minutes) min threshold")
+        let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
+        let turnaroundPoint = oldRoute.turnaroundPoint
         
-        let radiusMeters = primaryThreshold.searchRadiusMiles * 1609.34
+        // Collect ALL existing paths (to avoid duplicating any route, not just routes to same point)
+        let allExistingPaths = existingRoutes.flatMap { [$0.outboundPath, $0.returnPath] }
+        
+        print("  Checking against \(existingRoutes.count) existing routes (\(allExistingPaths.count) paths)")
         
         do {
-            let pois = try await POIService.shared.fetchPOIs(near: startingPoint.coordinate, radiusInMeters: radiusMeters)
+            // Request multiple alternative routes from OSRM
+            let osrmOutboundAlternatives = try await OSRMService.shared.fetchRoutes(from: startPoint.coordinate, to: turnaroundPoint.coordinate)
+            let osrmReturnAlternatives = try await OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: startPoint.coordinate)
             
-            // Filter out the current POI and those too close to start
-            let startLoc = CLLocation(latitude: startingPoint.coordinate.latitude, longitude: startingPoint.coordinate.longitude)
-            var candidates = pois.filter { poi in
-                if poi.id == oldRoute.turnaroundPoint.id { return false }
-                let poiLoc = CLLocation(latitude: poi.coordinate.latitude, longitude: poi.coordinate.longitude)
-                return poiLoc.distance(from: startLoc) >= 500
-            }
+            print("  OSRM returned \(osrmOutboundAlternatives.count) outbound and \(osrmReturnAlternatives.count) return alternatives")
             
-            // Apply direction filter if specified
-            if directionPreference != .noPreference {
-                candidates = candidates.filter { poi in
-                    let bearing = calculateBearing(from: startingPoint.coordinate, to: poi.coordinate)
-                    return matchesDirection(bearing, preference: directionPreference)
-                }
-            }
-            
-            let candidates_shuffled = candidates.shuffled()
-            
-            let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
-            
-            // Try up to 10 candidates
-            for poi in candidates_shuffled.prefix(10) {
-                let result = await generateRoute(from: startPoint, to: poi, targetDistance: primaryThreshold.targetDistanceMiles, continent: city.continent)
-                if case .success(let newRoute) = result {
-                    if primaryThreshold.isValidDistance(newRoute.totalDistanceMiles) {
-                        return newRoute
+            // Try each combination of outbound and return routes
+            for (outIdx, osrmOutbound) in osrmOutboundAlternatives.enumerated() {
+                for (retIdx, osrmReturn) in osrmReturnAlternatives.enumerated() {
+                    print("  Trying combination: outbound #\(outIdx + 1), return #\(retIdx + 1)...")
+                    
+                    // Check if this combination is sufficiently different from ALL existing paths
+                    let outboundOverlap = calculateMaxOverlapWithExisting(newPath: osrmOutbound.coordinates, existingPaths: allExistingPaths)
+                    let returnOverlap = calculateMaxOverlapWithExisting(newPath: osrmReturn.coordinates, existingPaths: allExistingPaths)
+                    
+                    // Skip if too similar to existing routes (>70% overlap)
+                    if outboundOverlap > 0.7 || returnOverlap > 0.7 {
+                        print("    → Too similar to existing (outbound: \(String(format: "%.0f", outboundOverlap * 100))%, return: \(String(format: "%.0f", returnOverlap * 100))%) - trying next")
+                        continue
                     }
+                    
+                    // Check for highway-like characteristics
+                    if let reason = detectHighwayCharacteristics(coordinates: osrmOutbound.coordinates, distanceMeters: osrmOutbound.distanceMeters) {
+                        print("    → Outbound looks like highway: \(reason) - trying next")
+                        continue
+                    }
+                    
+                    if let reason = detectHighwayCharacteristics(coordinates: osrmReturn.coordinates, distanceMeters: osrmReturn.distanceMeters) {
+                        print("    → Return looks like highway: \(reason) - trying next")
+                        continue
+                    }
+                    
+                    print("    → ✓ Found valid alternative route!")
+                    
+                    // Build the new route
+                    let totalDistanceMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
+                    let totalDistanceMiles = totalDistanceMeters / 1609.34
+                    let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
+                    let distanceBand = inferDistanceBand(from: totalDistanceMiles)
+                    
+                    let newRoute = Route(
+                        name: turnaroundPoint.name,
+                        continent: city.continent,
+                        startingPoint: startPoint,
+                        turnaroundPoint: turnaroundPoint,
+                        totalDistanceMiles: totalDistanceMiles,
+                        distanceBandMiles: distanceBand,
+                        outboundPath: osrmOutbound.coordinates,
+                        returnPath: osrmReturn.coordinates,
+                        validSessionTimes: validTimes
+                    )
+                    
+                    return newRoute
                 }
             }
+            
+            print("  ⚠️ No sufficiently different alternative found")
+            return nil
+            
         } catch {
-            print("Regenerate failed: \(error)")
+            print("  Regenerate failed: \(error)")
+            return nil
         }
+    }
+    
+    /// Calculate the maximum overlap between a new path and any of the existing paths
+    private func calculateMaxOverlapWithExisting(newPath: [CLLocationCoordinate2D], existingPaths: [[CLLocationCoordinate2D]]) -> Double {
+        guard !existingPaths.isEmpty else { return 0 }
         
-        return nil
+        var maxOverlap: Double = 0
+        for existingPath in existingPaths {
+            let overlap = OverlapCalculator.shared.calculateOverlap(pathA: newPath, pathB: existingPath)
+            maxOverlap = max(maxOverlap, overlap)
+        }
+        return maxOverlap
     }
     
     // MARK: - Private Methods
@@ -404,50 +448,61 @@ class RouteGenerator {
     }
     
     private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double, continent: String) async -> RouteGenerationResult {
+        // OSRM-only approach:
+        // 1. OSRM generates the route geometry
+        // 2. Check for highway-like characteristics
+        // 3. Use OSRM geometry if checks pass
+        
         do {
-            print("        → Calling OSRM for outbound & return paths...")
+            print("        → Fetching route from OSRM...")
             
-            async let outboundTask = OSRMService.shared.fetchRoutes(from: start.coordinate, to: turnaroundPoint.coordinate)
-            async let returnTask = OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: start.coordinate)
+            // Fetch routes from OSRM
+            async let osrmOutboundTask = OSRMService.shared.fetchRoutes(from: start.coordinate, to: turnaroundPoint.coordinate)
+            async let osrmReturnTask = OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: start.coordinate)
             
-            let (outboundOpts, returnOpts) = try await (outboundTask, returnTask)
+            let (osrmOutboundOpts, osrmReturnOpts) = try await (osrmOutboundTask, osrmReturnTask)
             
-            print("        → OSRM returned \(outboundOpts.count) outbound options, \(returnOpts.count) return options")
-            
-            if outboundOpts.isEmpty || returnOpts.isEmpty {
-                print("        → No route options from OSRM")
-                return .failedOSRM
+            guard let osrmOutbound = osrmOutboundOpts.first else {
+                print("        → No outbound route from OSRM")
+                return .failedRouting
             }
             
-            // Find best pair with least overlap
-            var bestPair: (OSRMPath, OSRMPath)?
-            var minOverlap = 1.0
-            
-            for outPath in outboundOpts {
-                for retPath in returnOpts {
-                    let overlap = OverlapCalculator.shared.calculateOverlap(pathA: outPath.coordinates, pathB: retPath.coordinates)
-                    
-                    if overlap < minOverlap {
-                        minOverlap = overlap
-                        bestPair = (outPath, retPath)
-                    }
-                }
+            guard let osrmReturn = osrmReturnOpts.first else {
+                print("        → No return route from OSRM")
+                return .failedRouting
             }
             
-            guard let (bestOut, bestRet) = bestPair else {
-                print("        → Could not find valid path pair")
-                return .failedOSRM
+            let osrmTotalMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
+            print("        → OSRM: outbound=\(osrmOutbound.coordinates.count) pts, return=\(osrmReturn.coordinates.count) pts, total=\(String(format: "%.2f", osrmTotalMeters/1609.34)) mi")
+            
+            // Check for highway-like characteristics
+            print("        → Highway detection checks...")
+            
+            // Check outbound path
+            if let reason = detectHighwayCharacteristics(coordinates: osrmOutbound.coordinates, distanceMeters: osrmOutbound.distanceMeters) {
+                print("        → ⚠️ Outbound path looks like highway: \(reason) - skipping")
+                return .failedRouting
             }
             
-            let totalDistanceMeters = bestOut.distanceMeters + bestRet.distanceMeters
+            // Check return path
+            if let reason = detectHighwayCharacteristics(coordinates: osrmReturn.coordinates, distanceMeters: osrmReturn.distanceMeters) {
+                print("        → ⚠️ Return path looks like highway: \(reason) - skipping")
+                return .failedRouting
+            }
+            
+            print("        → ✓ No highway characteristics detected")
+            
+            // Use OSRM geometry with OSRM distance
+            let totalDistanceMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
             let totalDistanceMiles = totalDistanceMeters / 1609.34
             
-            print("        → Best pair: outbound=\(String(format: "%.2f", bestOut.distanceMeters/1609.34)) mi, return=\(String(format: "%.2f", bestRet.distanceMeters/1609.34)) mi, total=\(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", minOverlap * 100))%")
+            // Calculate overlap
+            let overlap = OverlapCalculator.shared.calculateOverlap(pathA: osrmOutbound.coordinates, pathB: osrmReturn.coordinates)
+            
+            print("        → Final: \(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", overlap * 100))%")
             
             // Generate metadata
             let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
-            
-            // Infer distance band for backwards compatibility
             let distanceBand = inferDistanceBand(from: totalDistanceMiles)
             
             let route = Route(
@@ -457,8 +512,8 @@ class RouteGenerator {
                 turnaroundPoint: turnaroundPoint,
                 totalDistanceMiles: totalDistanceMiles,
                 distanceBandMiles: distanceBand,
-                outboundPath: bestOut.coordinates,
-                returnPath: bestRet.coordinates,
+                outboundPath: osrmOutbound.coordinates,
+                returnPath: osrmReturn.coordinates,
                 validSessionTimes: validTimes
             )
             
@@ -466,8 +521,88 @@ class RouteGenerator {
             
         } catch {
             print("        → OSRM error for \(turnaroundPoint.name): \(error)")
-            return .failedOSRM
+            return .failedRouting
         }
+    }
+    
+    // MARK: - Highway Detection
+    
+    /// Detects if a path has highway-like characteristics
+    /// Returns nil if path looks normal, or a reason string if it looks like a highway
+    /// NOTE: Thresholds are intentionally lenient - city grids have long straight streets
+    private func detectHighwayCharacteristics(coordinates: [CLLocationCoordinate2D], distanceMeters: Double) -> String? {
+        guard coordinates.count >= 2 else { return nil }
+        
+        // Check 1: Straightness ratio (VERY lenient - only catch extreme cases)
+        // City grids can be quite straight, so only flag if nearly perfect straight line
+        let straightLineDistance = calculateStraightLineDistance(from: coordinates.first!, to: coordinates.last!)
+        let straightnessRatio = straightLineDistance / distanceMeters
+        
+        // Only flag if >98% straight AND over 2km - this catches true highways
+        if straightnessRatio > 0.98 && distanceMeters > 2000 {
+            return "extremely straight (ratio: \(String(format: "%.2f", straightnessRatio)))"
+        }
+        
+        // Check 2: Long straight segments (VERY lenient)
+        // Only flag segments over 5km that are 99%+ straight - definite highway behavior
+        if let longSegment = findLongestStraightSegment(coordinates: coordinates) {
+            if longSegment.distance > 5000 && longSegment.straightness > 0.99 {
+                return "highway-like segment (\(Int(longSegment.distance))m at \(String(format: "%.0f", longSegment.straightness * 100))% straight)"
+            }
+        }
+        
+        // Check 3: Low coordinate density (disabled - not reliable)
+        // City streets can have low density too, this causes too many false positives
+        // let pointsPerKm = Double(coordinates.count) / (distanceMeters / 1000.0)
+        
+        // Check 4: Average segment length (disabled - not reliable)
+        // Grid cities naturally have longer segments
+        // let avgSegmentLength = distanceMeters / Double(max(coordinates.count - 1, 1))
+        
+        return nil
+    }
+    
+    /// Calculate straight-line distance between two coordinates in meters
+    private func calculateStraightLineDistance(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
+        let startLoc = CLLocation(latitude: start.latitude, longitude: start.longitude)
+        let endLoc = CLLocation(latitude: end.latitude, longitude: end.longitude)
+        return startLoc.distance(from: endLoc)
+    }
+    
+    /// Find the longest straight segment in a path
+    private func findLongestStraightSegment(coordinates: [CLLocationCoordinate2D]) -> (distance: Double, straightness: Double)? {
+        guard coordinates.count >= 3 else { return nil }
+        
+        var longestDistance: Double = 0
+        var longestStraightness: Double = 0
+        
+        // Check segments of varying lengths (10-50 points)
+        for windowSize in stride(from: 10, through: min(50, coordinates.count), by: 5) {
+            for i in 0...(coordinates.count - windowSize) {
+                let segment = Array(coordinates[i..<(i + windowSize)])
+                let pathDistance = calculatePathDistance(segment)
+                let straightDistance = calculateStraightLineDistance(from: segment.first!, to: segment.last!)
+                let straightness = straightDistance / max(pathDistance, 1)
+                
+                if pathDistance > longestDistance && straightness > 0.9 {
+                    longestDistance = pathDistance
+                    longestStraightness = straightness
+                }
+            }
+        }
+        
+        return longestDistance > 0 ? (longestDistance, longestStraightness) : nil
+    }
+    
+    /// Calculate total path distance along coordinates
+    private func calculatePathDistance(_ coordinates: [CLLocationCoordinate2D]) -> Double {
+        guard coordinates.count >= 2 else { return 0 }
+        
+        var totalDistance: Double = 0
+        for i in 1..<coordinates.count {
+            totalDistance += calculateStraightLineDistance(from: coordinates[i-1], to: coordinates[i])
+        }
+        return totalDistance
     }
     
     private func calculateValidSessionTimes(distanceMiles: Double) -> [Int] {

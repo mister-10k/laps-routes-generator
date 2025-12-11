@@ -103,6 +103,12 @@ iOSInjectionProject/
 # Supabase credentials (use SupabaseConfig.swift.template as reference)
 laps-routes-generator/Helpers/SupabaseConfig.swift
 
+# Google API credentials (use GoogleConfig.swift.template as reference)
+laps-routes-generator/Helpers/GoogleConfig.swift
+
+# Mapbox credentials (use MapboxConfig.swift.template as reference)
+laps-routes-generator/Helpers/MapboxConfig.swift
+
 # IDE
 .vscode/
 .idea/
