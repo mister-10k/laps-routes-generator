@@ -337,20 +337,20 @@ class RouteGenerator {
         print("  Checking against \(existingRoutes.count) existing routes (\(allExistingPaths.count) paths)")
         
         do {
-            // Request multiple alternative routes from OSRM
-            let osrmOutboundAlternatives = try await OSRMService.shared.fetchRoutes(from: startPoint.coordinate, to: turnaroundPoint.coordinate)
-            let osrmReturnAlternatives = try await OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: startPoint.coordinate)
+            // Request routes from Valhalla (pedestrian profile - avoids highways)
+            let valhallaOutboundAlternatives = try await ValhallaService.shared.fetchRoutes(from: startPoint.coordinate, to: turnaroundPoint.coordinate)
+            let valhallaReturnAlternatives = try await ValhallaService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: startPoint.coordinate)
             
-            print("  OSRM returned \(osrmOutboundAlternatives.count) outbound and \(osrmReturnAlternatives.count) return alternatives")
+            print("  Valhalla returned \(valhallaOutboundAlternatives.count) outbound and \(valhallaReturnAlternatives.count) return alternatives")
             
             // Try each combination of outbound and return routes
-            for (outIdx, osrmOutbound) in osrmOutboundAlternatives.enumerated() {
-                for (retIdx, osrmReturn) in osrmReturnAlternatives.enumerated() {
+            for (outIdx, valhallaOutbound) in valhallaOutboundAlternatives.enumerated() {
+                for (retIdx, valhallaReturn) in valhallaReturnAlternatives.enumerated() {
                     print("  Trying combination: outbound #\(outIdx + 1), return #\(retIdx + 1)...")
                     
                     // Check if this combination is sufficiently different from ALL existing paths
-                    let outboundOverlap = calculateMaxOverlapWithExisting(newPath: osrmOutbound.coordinates, existingPaths: allExistingPaths)
-                    let returnOverlap = calculateMaxOverlapWithExisting(newPath: osrmReturn.coordinates, existingPaths: allExistingPaths)
+                    let outboundOverlap = calculateMaxOverlapWithExisting(newPath: valhallaOutbound.coordinates, existingPaths: allExistingPaths)
+                    let returnOverlap = calculateMaxOverlapWithExisting(newPath: valhallaReturn.coordinates, existingPaths: allExistingPaths)
                     
                     // Skip if too similar to existing routes (>70% overlap)
                     if outboundOverlap > 0.7 || returnOverlap > 0.7 {
@@ -359,12 +359,12 @@ class RouteGenerator {
                     }
                     
                     // Check for highway-like characteristics
-                    if let reason = detectHighwayCharacteristics(coordinates: osrmOutbound.coordinates, distanceMeters: osrmOutbound.distanceMeters) {
+                    if let reason = detectHighwayCharacteristics(coordinates: valhallaOutbound.coordinates, distanceMeters: valhallaOutbound.distanceMeters) {
                         print("    → Outbound looks like highway: \(reason) - trying next")
                         continue
                     }
                     
-                    if let reason = detectHighwayCharacteristics(coordinates: osrmReturn.coordinates, distanceMeters: osrmReturn.distanceMeters) {
+                    if let reason = detectHighwayCharacteristics(coordinates: valhallaReturn.coordinates, distanceMeters: valhallaReturn.distanceMeters) {
                         print("    → Return looks like highway: \(reason) - trying next")
                         continue
                     }
@@ -372,7 +372,7 @@ class RouteGenerator {
                     print("    → ✓ Found valid alternative route!")
                     
                     // Build the new route
-                    let totalDistanceMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
+                    let totalDistanceMeters = valhallaOutbound.distanceMeters + valhallaReturn.distanceMeters
                     let totalDistanceMiles = totalDistanceMeters / 1609.34
                     let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
                     let distanceBand = inferDistanceBand(from: totalDistanceMiles)
@@ -384,8 +384,8 @@ class RouteGenerator {
                         turnaroundPoint: turnaroundPoint,
                         totalDistanceMiles: totalDistanceMiles,
                         distanceBandMiles: distanceBand,
-                        outboundPath: osrmOutbound.coordinates,
-                        returnPath: osrmReturn.coordinates,
+                        outboundPath: valhallaOutbound.coordinates,
+                        returnPath: valhallaReturn.coordinates,
                         validSessionTimes: validTimes
                     )
                     
@@ -448,79 +448,93 @@ class RouteGenerator {
     }
     
     private func generateRoute(from start: PointOfInterest, to turnaroundPoint: PointOfInterest, targetDistance: Double, continent: String) async -> RouteGenerationResult {
-        // OSRM-only approach:
-        // 1. OSRM generates the route geometry
-        // 2. Check for highway-like characteristics
-        // 3. Use OSRM geometry if checks pass
+        // Valhalla approach (pedestrian profile - automatically avoids highways):
+        // 1. Valhalla generates multiple route alternatives
+        // 2. Try combinations to find the best loop (lowest overlap)
+        // 3. Check for highway-like characteristics (extra safety)
         
         do {
-            print("        → Fetching route from OSRM...")
+            print("        → Fetching routes from Valhalla...")
             
-            // Fetch routes from OSRM
-            async let osrmOutboundTask = OSRMService.shared.fetchRoutes(from: start.coordinate, to: turnaroundPoint.coordinate)
-            async let osrmReturnTask = OSRMService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: start.coordinate)
+            // Fetch multiple route alternatives from Valhalla
+            async let valhallaOutboundTask = ValhallaService.shared.fetchRoutes(from: start.coordinate, to: turnaroundPoint.coordinate)
+            async let valhallaReturnTask = ValhallaService.shared.fetchRoutes(from: turnaroundPoint.coordinate, to: start.coordinate)
             
-            let (osrmOutboundOpts, osrmReturnOpts) = try await (osrmOutboundTask, osrmReturnTask)
+            let (valhallaOutboundOpts, valhallaReturnOpts) = try await (valhallaOutboundTask, valhallaReturnTask)
             
-            guard let osrmOutbound = osrmOutboundOpts.first else {
-                print("        → No outbound route from OSRM")
+            guard !valhallaOutboundOpts.isEmpty else {
+                print("        → No outbound routes from Valhalla")
                 return .failedRouting
             }
             
-            guard let osrmReturn = osrmReturnOpts.first else {
-                print("        → No return route from OSRM")
+            guard !valhallaReturnOpts.isEmpty else {
+                print("        → No return routes from Valhalla")
                 return .failedRouting
             }
             
-            let osrmTotalMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
-            print("        → OSRM: outbound=\(osrmOutbound.coordinates.count) pts, return=\(osrmReturn.coordinates.count) pts, total=\(String(format: "%.2f", osrmTotalMeters/1609.34)) mi")
+            print("        → Valhalla: \(valhallaOutboundOpts.count) outbound options, \(valhallaReturnOpts.count) return options")
             
-            // Check for highway-like characteristics
-            print("        → Highway detection checks...")
+            // Try all combinations to find the best loop (lowest overlap)
+            var bestRoute: Route?
+            var bestOverlap: Double = 1.0
             
-            // Check outbound path
-            if let reason = detectHighwayCharacteristics(coordinates: osrmOutbound.coordinates, distanceMeters: osrmOutbound.distanceMeters) {
-                print("        → ⚠️ Outbound path looks like highway: \(reason) - skipping")
+            for (outIdx, outbound) in valhallaOutboundOpts.enumerated() {
+                // Check outbound for highway characteristics
+                if let reason = detectHighwayCharacteristics(coordinates: outbound.coordinates, distanceMeters: outbound.distanceMeters) {
+                    print("        → Outbound #\(outIdx + 1) looks like highway: \(reason) - skipping")
+                    continue
+                }
+                
+                for (retIdx, returnPath) in valhallaReturnOpts.enumerated() {
+                    // Check return for highway characteristics
+                    if let reason = detectHighwayCharacteristics(coordinates: returnPath.coordinates, distanceMeters: returnPath.distanceMeters) {
+                        if outIdx == 0 { // Only print once per return option
+                            print("        → Return #\(retIdx + 1) looks like highway: \(reason) - skipping")
+                        }
+                        continue
+                    }
+                    
+                    // Calculate overlap between this combination
+                    let overlap = OverlapCalculator.shared.calculateOverlap(pathA: outbound.coordinates, pathB: returnPath.coordinates)
+                    
+                    let totalDistanceMeters = outbound.distanceMeters + returnPath.distanceMeters
+                    let totalDistanceMiles = totalDistanceMeters / 1609.34
+                    
+                    print("        → Combo [\(outIdx + 1),\(retIdx + 1)]: \(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", overlap * 100))%")
+                    
+                    // Keep this combination if it has lower overlap
+                    if overlap < bestOverlap {
+                        bestOverlap = overlap
+                        
+                        let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
+                        let distanceBand = inferDistanceBand(from: totalDistanceMiles)
+                        
+                        bestRoute = Route(
+                            name: turnaroundPoint.name,
+                            continent: continent,
+                            startingPoint: start,
+                            turnaroundPoint: turnaroundPoint,
+                            totalDistanceMiles: totalDistanceMiles,
+                            distanceBandMiles: distanceBand,
+                            outboundPath: outbound.coordinates,
+                            returnPath: returnPath.coordinates,
+                            validSessionTimes: validTimes
+                        )
+                    }
+                }
+            }
+            
+            guard let route = bestRoute else {
+                print("        → No valid route combinations found")
                 return .failedRouting
             }
             
-            // Check return path
-            if let reason = detectHighwayCharacteristics(coordinates: osrmReturn.coordinates, distanceMeters: osrmReturn.distanceMeters) {
-                print("        → ⚠️ Return path looks like highway: \(reason) - skipping")
-                return .failedRouting
-            }
-            
-            print("        → ✓ No highway characteristics detected")
-            
-            // Use OSRM geometry with OSRM distance
-            let totalDistanceMeters = osrmOutbound.distanceMeters + osrmReturn.distanceMeters
-            let totalDistanceMiles = totalDistanceMeters / 1609.34
-            
-            // Calculate overlap
-            let overlap = OverlapCalculator.shared.calculateOverlap(pathA: osrmOutbound.coordinates, pathB: osrmReturn.coordinates)
-            
-            print("        → Final: \(String(format: "%.2f", totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", overlap * 100))%")
-            
-            // Generate metadata
-            let validTimes = calculateValidSessionTimes(distanceMiles: totalDistanceMiles)
-            let distanceBand = inferDistanceBand(from: totalDistanceMiles)
-            
-            let route = Route(
-                name: turnaroundPoint.name,
-                continent: continent,
-                startingPoint: start,
-                turnaroundPoint: turnaroundPoint,
-                totalDistanceMiles: totalDistanceMiles,
-                distanceBandMiles: distanceBand,
-                outboundPath: osrmOutbound.coordinates,
-                returnPath: osrmReturn.coordinates,
-                validSessionTimes: validTimes
-            )
+            print("        → ✓ Best loop: \(String(format: "%.2f", route.totalDistanceMiles)) mi, overlap=\(String(format: "%.0f", bestOverlap * 100))%")
             
             return .success(route)
             
         } catch {
-            print("        → OSRM error for \(turnaroundPoint.name): \(error)")
+            print("        → Valhalla error for \(turnaroundPoint.name): \(error)")
             return .failedRouting
         }
     }
