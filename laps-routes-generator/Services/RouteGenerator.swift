@@ -321,6 +321,147 @@ class RouteGenerator {
         )
     }
     
+    // MARK: - Generate Routes for Single Time Threshold
+    
+    /// Generates routes for a SINGLE time threshold, exhausting ALL available POIs
+    /// Does not stop at 10 routes - tries every POI that could work for this threshold
+    func generateRoutesForThreshold(minutes: Int, for city: City, startingPoint: StartingPoint, directionPreference: DirectionPreference = .noPreference, existingRoutes: [Route] = [], blacklistedPOINames: Set<String> = []) async -> GenerationResult {
+        let generationStartTime = Date()
+        let threshold = TimeThreshold(minutes: minutes)
+        
+        print("\n╔════════════════════════════════════════════════════════════╗")
+        print("║  SINGLE THRESHOLD GENERATION - EXHAUST ALL POIs            ║")
+        print("║  City: \(city.name.padding(toLength: 48, withPad: " ", startingAt: 0))  ║")
+        print("║  Starting Point: \(startingPoint.name.padding(toLength: 39, withPad: " ", startingAt: 0))  ║")
+        print("║  Direction: \(directionPreference.rawValue.padding(toLength: 44, withPad: " ", startingAt: 0))  ║")
+        print("║  Target Threshold: \(String(minutes).padding(toLength: 37, withPad: " ", startingAt: 0)) min  ║")
+        print("║  Target Distance: \(String(format: "%.2f", threshold.targetDistanceMiles).padding(toLength: 34, withPad: " ", startingAt: 0)) mi  ║")
+        print("║  Valid Range: \(String(format: "%.2f-%.2f", threshold.minDistanceMiles, threshold.maxDistanceMiles).padding(toLength: 38, withPad: " ", startingAt: 0)) mi  ║")
+        print("╚════════════════════════════════════════════════════════════╝\n")
+        
+        var allRoutes: [Route] = existingRoutes
+        var usedTurnaroundPointNames: Set<String> = Set(existingRoutes.map { $0.turnaroundPoint.name })
+        
+        let startPoint = PointOfInterest(name: startingPoint.name, coordinate: startingPoint.coordinate, type: "landmark")
+        
+        await updateProgress("Generating routes for \(minutes) min threshold...")
+        
+        // Fetch POIs at the appropriate radius
+        let radiusMeters = threshold.searchRadiusMiles * 1609.34
+        
+        do {
+            print("  Searching for POIs at radius \(String(format: "%.2f", radiusMeters)) m (\(String(format: "%.2f", threshold.searchRadiusMiles)) mi)...")
+            
+            let pois = try await POIService.shared.fetchPOIs(near: startingPoint.coordinate, radiusInMeters: radiusMeters)
+            print("  POI search returned \(pois.count) total POIs")
+            
+            // Filter out POIs we've already used
+            let unusedPOIs = pois.filter { !usedTurnaroundPointNames.contains($0.name) }
+            print("  After removing already-used: \(unusedPOIs.count) remaining")
+            
+            // Filter out manually blacklisted POIs
+            let nonBlacklistedPOIs = unusedPOIs.filter { !blacklistedPOINames.contains($0.name) }
+            print("  After removing manually blacklisted: \(nonBlacklistedPOIs.count) remaining")
+            
+            // Filter POIs by straight-line distance
+            let startLoc = CLLocation(latitude: startingPoint.coordinate.latitude, longitude: startingPoint.coordinate.longitude)
+            let minStraightLineMeters = (threshold.minDistanceMiles / 4.0) * 1609.34
+            let maxStraightLineMeters = (threshold.maxDistanceMiles / 1.5) * 1609.34
+            
+            let availablePOIs = nonBlacklistedPOIs.filter { poi in
+                let poiLoc = CLLocation(latitude: poi.coordinate.latitude, longitude: poi.coordinate.longitude)
+                let straightLineDistance = poiLoc.distance(from: startLoc)
+                return straightLineDistance >= 500 &&
+                       straightLineDistance >= minStraightLineMeters &&
+                       straightLineDistance <= maxStraightLineMeters
+            }
+            
+            print("  After distance filtering: \(availablePOIs.count) POIs in range")
+            
+            // Filter by direction preference
+            let directionFilteredPOIs: [PointOfInterest]
+            if directionPreference != .noPreference {
+                directionFilteredPOIs = availablePOIs.filter { poi in
+                    let bearing = calculateBearing(from: startingPoint.coordinate, to: poi.coordinate)
+                    return matchesDirection(bearing, preference: directionPreference)
+                }
+                print("  After direction filtering: \(directionFilteredPOIs.count) POIs")
+            } else {
+                directionFilteredPOIs = availablePOIs
+            }
+            
+            var generatedCount = 0
+            var attemptedCount = 0
+            var failedRouting = 0
+            var outsideRange = 0
+            
+            // Sort by priority and try ALL POIs
+            let prioritizedPOIs = directionFilteredPOIs
+                .sorted { $0.priority < $1.priority }
+                .chunkedByPriority()
+                .flatMap { $0.shuffled() }
+            
+            print("\n  🎯 Trying ALL \(prioritizedPOIs.count) POIs for \(minutes) min threshold...\n")
+            
+            for poi in prioritizedPOIs {
+                attemptedCount += 1
+                
+                print("    [\(attemptedCount)/\(prioritizedPOIs.count)] Trying: \(poi.name)...")
+                await updateProgress("[\(attemptedCount)/\(prioritizedPOIs.count)] \(poi.name)...")
+                
+                let result = await generateRoute(from: startPoint, to: poi, targetDistance: threshold.targetDistanceMiles, continent: city.continent)
+                
+                switch result {
+                case .success(let route):
+                    if threshold.isValidDistance(route.totalDistanceMiles) {
+                        allRoutes.append(route)
+                        usedTurnaroundPointNames.insert(poi.name)
+                        generatedCount += 1
+                        print("    [\(attemptedCount)] ✓ SUCCESS: \(poi.name) → \(String(format: "%.2f", route.totalDistanceMiles)) mi")
+                        
+                        await notifyRouteGenerated(route)
+                        await saveRoutesIncrementally(allRoutes)
+                    } else {
+                        outsideRange += 1
+                        print("    [\(attemptedCount)] ✗ OUTSIDE RANGE: \(poi.name) → \(String(format: "%.2f", route.totalDistanceMiles)) mi (need \(String(format: "%.2f-%.2f", threshold.minDistanceMiles, threshold.maxDistanceMiles)) mi)")
+                    }
+                    
+                case .failedRouting:
+                    failedRouting += 1
+                    print("    [\(attemptedCount)] ✗ ROUTING FAILED: \(poi.name)")
+                    
+                case .fatalAPIError(let message):
+                    print("\n🛑 FATAL API ERROR: \(message)")
+                    await saveRoutesIncrementally(allRoutes)
+                    return GenerationResult(routes: allRoutes, skippedThresholds: [], coverageByThreshold: [minutes: generatedCount])
+                }
+            }
+            
+            let generationDuration = Date().timeIntervalSince(generationStartTime)
+            let mins = Int(generationDuration) / 60
+            let secs = Int(generationDuration) % 60
+            
+            print("\n════════════════════════════════════════════════════════════")
+            print("SINGLE THRESHOLD GENERATION COMPLETE")
+            print("Threshold: \(minutes) min | Generated: \(generatedCount) routes")
+            print("Attempted: \(attemptedCount) | Outside Range: \(outsideRange) | Failed: \(failedRouting)")
+            print("Duration: \(mins)m \(secs)s")
+            print("════════════════════════════════════════════════════════════\n")
+            
+            await updateProgress("Generated \(generatedCount) routes for \(minutes) min")
+            
+            return GenerationResult(
+                routes: allRoutes,
+                skippedThresholds: generatedCount == 0 ? [minutes] : [],
+                coverageByThreshold: [minutes: generatedCount]
+            )
+            
+        } catch {
+            print("  ✗ Error fetching POIs: \(error)")
+            return GenerationResult(routes: allRoutes, skippedThresholds: [minutes], coverageByThreshold: [:])
+        }
+    }
+    
     // MARK: - Regenerate Single Route
     
     /// Regenerates a route to the SAME turnaround point but with a DIFFERENT path

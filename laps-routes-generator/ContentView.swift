@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var currentToast: Toast?
     @State private var showClearRoutesAlert = false
     @State private var showClearBlacklistAlert = false
+    @State private var selectedTimeThreshold: Int? = nil // nil means "All"
     
     // Track newly generated routes (persisted until clicked)
     @State private var newlyGeneratedRouteIds: Set<UUID> = []
@@ -123,6 +124,16 @@ struct ContentView: View {
                         SelectionPersistence.saveDirection(newDirection)
                     }
                 
+                // Time threshold picker
+                Picker("Time", selection: $selectedTimeThreshold) {
+                    Text("All Times").tag(nil as Int?)
+                    Divider()
+                    ForEach(allTimeSlots, id: \.self) { time in
+                        Text("\(time) min").tag(time as Int?)
+                    }
+                }
+                .frame(width: 120)
+                
                 Spacer()
                 
                 if isGenerating {
@@ -146,7 +157,7 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                 }
                 
-                Button("Generate All Routes") {
+                Button(selectedTimeThreshold == nil ? "Generate All Routes" : "Generate \(selectedTimeThreshold!)min Routes") {
                     generateRoutes()
                 }
                 .disabled(isGenerating)
@@ -161,6 +172,7 @@ struct ContentView: View {
                     ZStack(alignment: .topLeading) {
                         MapView(
                             region: region,
+                            startingPoint: selectedStartingPoint,
                             selectedRoute: selectedRoute
                         )
                     }
@@ -318,17 +330,22 @@ struct ContentView: View {
             
             // Bottom Bar
             HStack {
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Coverage:")
                         .font(.caption)
                         .fontWeight(.bold)
                     
-                    // Simple coverage display
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(stride(from: 5, through: 120, by: 5).map { $0 }, id: \.self) { duration in
-                                CoverageBadge(duration: duration, routes: routes)
-                            }
+                    // Top row: 5-60 min
+                    HStack(spacing: 12) {
+                        ForEach(stride(from: 5, through: 60, by: 5).map { $0 }, id: \.self) { duration in
+                            CoverageBadge(duration: duration, routes: routes)
+                        }
+                    }
+                    
+                    // Bottom row: 65-120 min
+                    HStack(spacing: 12) {
+                        ForEach(stride(from: 65, through: 120, by: 5).map { $0 }, id: \.self) { duration in
+                            CoverageBadge(duration: duration, routes: routes)
                         }
                     }
                 }
@@ -545,8 +562,28 @@ struct ContentView: View {
             // Get blacklisted POI names for this city
             let blacklistedNames = PersistenceService.shared.getBlacklistedNames(for: selectedCity.name)
             
-            // Pass existing routes and blacklist so generator doesn't regenerate what we already have
-            let result = await RouteGenerator.shared.generateRoutes(for: selectedCity, startingPoint: selectedStartingPoint, directionPreference: selectedDirection, existingRoutes: existingRoutes, blacklistedPOINames: blacklistedNames)
+            let result: GenerationResult
+            
+            if let thresholdMinutes = selectedTimeThreshold {
+                // Generate for single threshold - exhaust all POIs
+                result = await RouteGenerator.shared.generateRoutesForThreshold(
+                    minutes: thresholdMinutes,
+                    for: selectedCity,
+                    startingPoint: selectedStartingPoint,
+                    directionPreference: selectedDirection,
+                    existingRoutes: existingRoutes,
+                    blacklistedPOINames: blacklistedNames
+                )
+            } else {
+                // Generate for all thresholds
+                result = await RouteGenerator.shared.generateRoutes(
+                    for: selectedCity,
+                    startingPoint: selectedStartingPoint,
+                    directionPreference: selectedDirection,
+                    existingRoutes: existingRoutes,
+                    blacklistedPOINames: blacklistedNames
+                )
+            }
             
             await MainActor.run {
                 // Final sync - ensure we have all routes (in case callback missed any)
@@ -555,13 +592,20 @@ struct ContentView: View {
                 self.isGenerating = false
                 
                 // Create status message
-                let coverageCount = result.coverageByThreshold.values.filter { $0 >= 10 }.count
-                let totalThresholds = result.coverageByThreshold.count
                 let newRoutesCount = result.routes.count - existingRoutes.count
-                if existingRoutes.isEmpty {
-                    self.generationStatus = "Generated \(result.routes.count) routes (\(coverageCount)/\(totalThresholds) thresholds covered)"
+                if let thresholdMinutes = selectedTimeThreshold {
+                    // Single threshold message
+                    let thresholdRouteCount = result.coverageByThreshold[thresholdMinutes] ?? 0
+                    self.generationStatus = "Generated \(newRoutesCount) routes for \(thresholdMinutes) min (total: \(thresholdRouteCount) for this threshold)"
                 } else {
-                    self.generationStatus = "Added \(newRoutesCount) new routes (total: \(result.routes.count), \(coverageCount)/\(totalThresholds) covered)"
+                    // All thresholds message
+                    let coverageCount = result.coverageByThreshold.values.filter { $0 >= 10 }.count
+                    let totalThresholds = result.coverageByThreshold.count
+                    if existingRoutes.isEmpty {
+                        self.generationStatus = "Generated \(result.routes.count) routes (\(coverageCount)/\(totalThresholds) thresholds covered)"
+                    } else {
+                        self.generationStatus = "Added \(newRoutesCount) new routes (total: \(result.routes.count), \(coverageCount)/\(totalThresholds) covered)"
+                    }
                 }
                 
                 // Show alert if any thresholds were skipped
@@ -765,15 +809,18 @@ struct CoverageBadge: View {
     let duration: Int
     let routes: [Route]
     
+    var routeCount: Int {
+        routes.filter { $0.validSessionTimes.contains(duration) }.count
+    }
+    
     var isCovered: Bool {
         // "Green checkmark = 10+ routes cover this duration"
-        let count = routes.filter { $0.validSessionTimes.contains(duration) }.count
-        return count >= 10
+        routeCount >= 10
     }
     
     var body: some View {
         HStack(spacing: 2) {
-            Text("\(duration)m")
+            Text("\(duration)m (\(routeCount))")
             Image(systemName: isCovered ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(isCovered ? .green : .orange)
         }

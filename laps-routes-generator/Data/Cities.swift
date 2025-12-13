@@ -12,7 +12,8 @@ struct Cities {
             StartingPoint(name: "Crypto.com Arena", coordinate: CLLocationCoordinate2D(latitude: 34.043024, longitude: -118.267153))
         ]),
         City(name: "Mexico City", continent: "North America", startingPoints: [
-            StartingPoint(name: "Estadio Azteca", coordinate: CLLocationCoordinate2D(latitude: 19.3029, longitude: -99.1506))
+            StartingPoint(name: "Estadio Azteca", coordinate: CLLocationCoordinate2D(latitude: 19.3029, longitude: -99.1506)),
+            StartingPoint(name: "Constitution Plaza", coordinate: CLLocationCoordinate2D(latitude: 19.4326281138079, longitude: -99.13320002317666))
         ]),
         
         // SOUTH AMERICA
@@ -28,24 +29,28 @@ struct Cities {
         
         // EUROPE
         City(name: "London", continent: "Europe", startingPoints: [
-            StartingPoint(name: "Wembley Stadium", coordinate: CLLocationCoordinate2D(latitude: 51.5560, longitude: -0.2795))
+            StartingPoint(name: "Wembley Stadium", coordinate: CLLocationCoordinate2D(latitude: 51.5560, longitude: -0.2795)),
+            StartingPoint(name: "Tower of London", coordinate: CLLocationCoordinate2D(latitude: 51.508, longitude: -0.076))
         ]),
         City(name: "Paris", continent: "Europe", startingPoints: [
             StartingPoint(name: "Eiffel Tower", coordinate: CLLocationCoordinate2D(latitude: 48.8584, longitude: 2.2945))
         ]),
         City(name: "Rome", continent: "Europe", startingPoints: [
-            StartingPoint(name: "The Colosseum", coordinate: CLLocationCoordinate2D(latitude: 41.8902, longitude: 12.4922))
+            StartingPoint(name: "The Colosseum", coordinate: CLLocationCoordinate2D(latitude: 41.8902, longitude: 12.4922)),
+            StartingPoint(name: "Stadio Olimpico", coordinate: CLLocationCoordinate2D(latitude: 41.93388223273087, longitude: 12.454808288261729))
         ]),
         
         // AFRICA
         City(name: "Cairo", continent: "Africa", startingPoints: [
-            StartingPoint(name: "Cairo International Stadium", coordinate: CLLocationCoordinate2D(latitude: 30.068419, longitude: 31.312285))
+            StartingPoint(name: "Cairo International Stadium", coordinate: CLLocationCoordinate2D(latitude: 30.068419, longitude: 31.312285)),
+            StartingPoint(name: "Level Up Cafe", coordinate: CLLocationCoordinate2D(latitude: 30.050337992902048, longitude: 31.330869016066824))
         ]),
         City(name: "Accra", continent: "Africa", startingPoints: [
             StartingPoint(name: "Accra Sports Stadium", coordinate: CLLocationCoordinate2D(latitude: 5.551051, longitude: -0.191801))
         ]),
         City(name: "Johannesburg", continent: "Africa", startingPoints: [
-            StartingPoint(name: "FNB Stadium", coordinate: CLLocationCoordinate2D(latitude: -26.2349, longitude: 27.9821))
+            StartingPoint(name: "FNB Stadium", coordinate: CLLocationCoordinate2D(latitude: -26.2349, longitude: 27.9821)),
+            StartingPoint(name: "Johannesburg Zoo", coordinate: CLLocationCoordinate2D(latitude: -26.165528, longitude: 28.034111))
         ]),
         
         // ASIA
@@ -56,7 +61,8 @@ struct Cities {
             StartingPoint(name: "Burj Khalifa", coordinate: CLLocationCoordinate2D(latitude: 25.1972, longitude: 55.2744))
         ]),
         City(name: "Singapore", continent: "Asia", startingPoints: [
-            StartingPoint(name: "Singapore National Stadium", coordinate: CLLocationCoordinate2D(latitude: 1.3039, longitude: 103.8744))
+            StartingPoint(name: "Singapore National Stadium", coordinate: CLLocationCoordinate2D(latitude: 1.3039, longitude: 103.8744)),
+            StartingPoint(name: "National Gallery Singapore", coordinate: CLLocationCoordinate2D(latitude: 1.290251911340206, longitude: 103.85152014001056))
         ]),
         
         // AUSTRALIA
