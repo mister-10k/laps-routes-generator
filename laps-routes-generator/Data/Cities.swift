@@ -57,8 +57,8 @@ struct Cities {
         City(name: "Tokyo", continent: "Asia", startingPoints: [
             StartingPoint(name: "Tokyo National Stadium", coordinate: CLLocationCoordinate2D(latitude: 35.6785, longitude: 139.7145))
         ]),
-        City(name: "Dubai", continent: "Asia", startingPoints: [
-            StartingPoint(name: "Burj Khalifa", coordinate: CLLocationCoordinate2D(latitude: 25.1972, longitude: 55.2744))
+        City(name: "Guangzhou", continent: "Asia", startingPoints: [
+            StartingPoint(name: "Huacheng Square", coordinate: CLLocationCoordinate2D(latitude: 23.124062039992605, longitude: 113.32084145123014))
         ]),
         City(name: "Singapore", continent: "Asia", startingPoints: [
             StartingPoint(name: "Singapore National Stadium", coordinate: CLLocationCoordinate2D(latitude: 1.3039, longitude: 103.8744)),

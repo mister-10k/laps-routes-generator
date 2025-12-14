@@ -134,6 +134,7 @@ class ValhallaService {
                     "bicycle_type": "Road",      // Road bike - prefers smooth roads
                     "use_roads": 0.9,            // Strongly prefer roads
                     "use_hills": 0.3,            // Avoid hills somewhat
+                    "use_ferry": 0.0,            // Never use ferries - important for cities like Sydney with harbor ferries
                     "maneuver_penalty": 30       // Penalize each turn - encourages longer straight segments
                 ]
             ],
